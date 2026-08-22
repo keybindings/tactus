@@ -71,15 +71,47 @@ frozen in the legacy section beneath it."""
 
 [[funnel]]
 path = "src/runner/container.rs"
-allows = []
-absent = true
+allows = ["clippy::disallowed_methods", "clippy::disallowed_types", "clippy::disallowed_macros"]
 packet = "effect_site_inventory.mechanism (2): src/runner/{host,container,invocation}.rs; `FunnelGroup::Container.module()`"
 review = """
-NOT IN THE TREE. `ContainerSite`'s eight sites map to this module and no file \
-implements them; PR5's `non_goals[0]` is production topology callers and the \
-container runner is PR6's. Recorded as absent rather than dropped, because a \
-funnel module the inventory names and the allowlist omits is exactly the \
-omission `effect_sites.json` exists to make visible."""
+The Container funnel, added by PR6: `FunnelGroup::Container.module()` is this \
+file and all EIGHT of `ContainerSite`'s variants are taken BY VALUE by an API \
+here (`write_intent`, `create`, `start`, `mount_git_view`, `stop`, `remove`, \
+`unmount_git_view`, `remove_intent`), each of which calls `hook(Before, site)` \
+-> primitive -> `hook(After, site)` through the one private `funnel` and \
+refuses a site that does not name its operation. Every effect is issued inside \
+one of them: the `docker` CLI (`DockerCli`, the only `std::process::Command` \
+in the file -- a coordinator-side control-plane call that deliberately does not \
+cross the boundary, with its row in `runner::tests::every_production_process_\
+start_is_classified`), the intent record's stage/fsync/rename/dir-fsync through \
+`util::fsync_file` and `util::fsync_dir`, and the R19 view directory. \
+NO PUBLIC FUNCTION RETURNS A WRITABLE HANDLE: the APIs return `PathBuf`, \
+`CreatedContainer`, `Liveness` and `()`, never a `Command`, a `File` or a \
+runtime handle -- `PR5D-FUNNEL-RETURNS-A-COMMAND` is the entry for what that \
+costs. The effectful methods of `ContainerRuntime` and `GitView` are on the \
+denylist ("docker invocation helpers"), so a lane's module cannot reach one \
+without appearing in this file; `runner::container::tests::every_container_\
+effect_in_the_tree_goes_through_the_funnel` is the source census beside it."""
+
+[[funnel]]
+path = "src/runner/container/view.rs"
+allows = ["clippy::disallowed_methods"]
+packet = "effect_site_inventory.mechanism (2), by attachment: the body of `Container.MountGitView` / `Container.UnmountGitView`, declared by src/runner/container.rs"
+review = """
+R19, the disposable role-scoped Git view, added by PR6 lane A. The two \
+functions here ARE the primitives of `Container.MountGitView` and \
+`Container.UnmountGitView` — `GitView::materialize` and `GitView::discard` are \
+themselves on the denylist, so nothing outside the funnel can call one, and the \
+funnel that does is `mount_git_view`/`unmount_git_view` in \
+`src/runner/container.rs`, each taking its site by value. The effects are the \
+view directory and the seven files and directories inside it \
+(`view::PROJECTED_ENTRIES`), all under `<R>/views/<container-name>`, and every \
+one is pruned by `discard`. NO WRITABLE HANDLE IS RETURNED: `materialize` \
+returns a `PathBuf` and `discard` returns `()`; the one `fs::File` is a local \
+that does not outlive `write_file`. Attached to the funnel section rather than \
+listed as a module of its own, in the idiom of `src/events/log.rs` and \
+`src/events/log/tests.rs` — PR5's precedent for a funnel body beside the module \
+the packet names."""
 
 [[funnel]]
 path = "src/runner/invocation.rs"

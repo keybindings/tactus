@@ -185,6 +185,86 @@ pub struct GovernedAllow {
 ///
 /// Raw strings (`r"…"`, `r#"…"#`), byte strings, char literals and escapes are
 /// handled; a `'a` lifetime is not a char literal and is left alone.
+/// Comments blanked, **string literals kept**.
+///
+/// The other half of [`blank_comments_and_strings`], and a separate function
+/// because a census whose needle lives *inside* a string cannot use that one:
+/// it blanks a literal including its quotes, so a search for `"docker` in its
+/// output looks for a byte sequence the haystack can no longer contain. That is
+/// not hypothetical — it is what the `mechanism` (1) "docker invocation
+/// helpers" census did until PR6, which is why it stayed green when a real
+/// `const DOCKER_PROGRAM: &str = "docker"` landed in production.
+///
+/// **One implementation, one caller shape.** `PR5D-VISIBILITY-CHECK-DUPLICATED`
+/// is the standing entry for a parser written twice in this tree, so this lives
+/// here beside its sibling rather than in each census that wants it.
+///
+/// Line comments, block comments (nested) and escapes are handled. **Raw
+/// strings are not modelled**: a `//` inside `r"…"` would truncate the rest of
+/// that line. The failure mode is therefore a needle this function does *not*
+/// find, which makes a census that uses it report something missing — loud —
+/// rather than accept something extra. Byte offsets are not preserved; line
+/// breaks are.
+#[must_use]
+pub fn blank_comments(source: &str) -> String {
+    let mut out = String::with_capacity(source.len());
+    let mut chars = source.chars().peekable();
+    let mut in_string = false;
+    let mut escaped = false;
+    while let Some(c) = chars.next() {
+        if in_string {
+            out.push(c);
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match c {
+            '"' => {
+                in_string = true;
+                out.push(c);
+            }
+            '/' if chars.peek() == Some(&'/') => {
+                for next in chars.by_ref() {
+                    if next == '\n' {
+                        out.push('\n');
+                        break;
+                    }
+                }
+            }
+            '/' if chars.peek() == Some(&'*') => {
+                let mut depth = 1usize;
+                let mut previous = ' ';
+                for next in chars.by_ref() {
+                    if next == '\n' {
+                        out.push('\n');
+                    }
+                    if previous == '/' && next == '*' {
+                        depth += 1;
+                        previous = ' ';
+                        continue;
+                    }
+                    if previous == '*' && next == '/' {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                        previous = ' ';
+                        continue;
+                    }
+                    previous = next;
+                }
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 #[must_use]
 #[allow(clippy::too_many_lines)]
 pub fn blank_comments_and_strings(source: &str) -> String {
@@ -555,6 +635,12 @@ pub const CLASSIFIED_MODULES: &[&str] = &[
     "src/events/log.rs",
     "src/runner/host.rs",
     "src/runner/invocation.rs",
+    // The third of `mechanism` (2)'s `src/runner/{host,container,invocation}.rs`,
+    // added by PR6. It is here rather than only in the allowlist because it
+    // denies six of its own paths — the "docker invocation helpers" the same
+    // sentence enumerates — and `every_effectful_wrapper_is_on_the_disallowed_list`
+    // requires a `tactus::` denial to be a row somebody classified.
+    "src/runner/container.rs",
     // legacy
     "src/engine/coordinator.rs",
     "src/engine/resume.rs",

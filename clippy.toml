@@ -96,6 +96,7 @@ disallowed-methods = [
     { path = "libc::execlp", reason = "TACTUS-EFFECT R22: Spawn.Exec" },
     { path = "libc::open", reason = "TACTUS-EFFECT: opens and can create a path" },
     { path = "libc::close", reason = "TACTUS-EFFECT R17/R28: closing the descriptor releases the hold" },
+    { path = "libc::dup2", reason = "TACTUS-EFFECT R22/R26: rewrites the process's descriptor table; the Unix reaper puts a pipe on the listing child's stdout with it before exec (os_matrix's 'kills the dead coordinator's labeled containers')" },
     { path = "libc::write", reason = "TACTUS-EFFECT: writes bytes to a descriptor" },
     { path = "libc::unlink", reason = "TACTUS-EFFECT: deletion" },
     { path = "libc::rmdir", reason = "TACTUS-EFFECT: deletion" },
@@ -165,6 +166,27 @@ disallowed-methods = [
     { path = "tactus::answer::answer", reason = "TACTUS-WRAPPER: creates the answers directory before staging" },
     { path = "tactus::connect::run_with", reason = "TACTUS-WRAPPER: creates a directory and writes the operator's tactus.toml" },
     { path = "tactus::runner::host::build_command", reason = "TACTUS-WRAPPER: RETURNS a std::process::Command -- the one thing the funnel section's review clause forbids. Recorded as PR5D-FUNNEL-RETURNS-A-COMMAND in reviews/FINDINGS.md; denied here so every caller is an allowlisted module" },
+
+    # -- docker invocation helpers ------------------------------------------
+    # `mechanism` (1) names "docker invocation helpers" in its own enumeration,
+    # and these are them: the four effectful operations of the container-runtime
+    # seam and the two of the Git-view seam. Every one is a PRIMITIVE of a
+    # `ContainerSite`, so its only legitimate caller is the Container funnel
+    # `src/runner/container.rs`, which is in the funnel section of
+    # `effects/allowlist.toml`.
+    #
+    # Rust module privacy cannot make this a compile error: an item private to
+    # `runner::container` is visible to every module a lane adds beside it
+    # (`runner::container::census`, `::exec`, ...), so a token, a sealed trait
+    # or a private constructor would all be reachable from a sibling. Denying
+    # the primitives makes it a BUILD error instead -- the same mechanism the
+    # packet chose, and a reviewed artifact at every gate.
+    { path = "tactus::runner::container::runtime::ContainerRuntime::create", reason = "TACTUS-EFFECT R26: container creation is Container.Create; the funnel verifies the reported image id against the record before Container.Start" },
+    { path = "tactus::runner::container::runtime::ContainerRuntime::start", reason = "TACTUS-EFFECT R26: Container.Start, and it is reachable only after Container.WriteIntent" },
+    { path = "tactus::runner::container::runtime::ContainerRuntime::stop", reason = "TACTUS-EFFECT R26: Container.Stop -- completion's docker stop and reclaim's docker kill" },
+    { path = "tactus::runner::container::runtime::ContainerRuntime::remove", reason = "TACTUS-EFFECT R26: Container.Remove" },
+    { path = "tactus::runner::container::GitView::materialize", reason = "TACTUS-EFFECT R19: the disposable Git view is Container.MountGitView" },
+    { path = "tactus::runner::container::GitView::discard", reason = "TACTUS-EFFECT R19: Container.UnmountGitView" },
 ]
 
 disallowed-types = [

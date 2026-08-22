@@ -25,6 +25,7 @@
 //! borrowed value. It is, and [`Runner`] is `Send + Sync` so a `&dyn Runner`
 //! can be held across the await points PR11 introduces.
 
+pub mod container;
 pub mod host;
 pub mod invocation;
 pub mod policy;
@@ -1445,6 +1446,23 @@ mod tests {
                  every routed process converges",
             ),
             (
+                "src/runner/container.rs",
+                1,
+                0,
+                0,
+                "the Container funnel's `docker` CLI: one `Command::new(` in \
+                 `DockerCli::exec`, which every container operation converges \
+                 on, and no `.spawn()` because each is an `.output()` the \
+                 funnel waits on. Deliberately NOT routed through the Runner, \
+                 and for the same reason as the two Git rows below — \
+                 DESIGN.md:612's \"authoritative Git and the event log never \
+                 do\" is about the things that BUILD the boundary rather than \
+                 execute inside it, and asking a container runtime what it \
+                 holds is one of them. A `docker inspect` that went through \
+                 the Runner would have to run inside the container whose \
+                 existence it is establishing",
+            ),
+            (
                 "src/workspace.rs",
                 14,
                 1,
@@ -1515,13 +1533,15 @@ mod tests {
              (DESIGN.md:612): route it through the Runner, or say here why it \
              is one of the things that never crosses the boundary"
         );
-        // The table names five files, and it is the *set* that is the claim:
+        // The table names six files, and it is the *set* that is the claim:
         // adapters, gates, review and the engine appear nowhere in it, which
         // is what "every CLI and gate process executes through Runner" means
-        // once the migration has happened. Four of the five really do start a
-        // process; the fifth, `src/effects.rs`, is a fixture that exists to be
-        // refused, and its row says so.
-        assert_eq!(expected.len(), 5);
+        // once the migration has happened. Five of the six really do start a
+        // process; the sixth, `src/effects.rs`, is a fixture that exists to be
+        // refused, and its row says so. PR6's `src/runner/container.rs` is the
+        // newest, and its row says why a `docker` call is one of the things
+        // that never crosses the boundary rather than one that was forgotten.
+        assert_eq!(expected.len(), 6);
         for name in [
             "src/gates.rs",
             "src/review.rs",

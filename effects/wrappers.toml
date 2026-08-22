@@ -360,6 +360,59 @@ effect_free = [
     "with_hooks",
 ]
 
+# PR6's Container funnel. The read-only inspections of `ContainerRuntime`
+# (`probe`, `image_by_reference`, `image_by_id`, `volume_present`,
+# `containers_with_label`, `observe`, `collect`) are classified EFFECT-FREE:
+# `ContainerSite` has no inspection variant, `classify_object_residue` is the
+# tree's precedent for "a read-only inspection (no effect)", and lane B's policy
+# resolution is required to call them ("resolved by read-only inspection"). They
+# do start a `docker` subprocess, and that subprocess start is accounted by
+# `src/runner/container.rs`'s row in
+# `runner::tests::every_production_process_start_is_classified` rather than
+# here.
+[[module]]
+path = "src/runner/container.rs"
+crate_path = "tactus::runner::container"
+funnel = [
+    "write_intent",
+    "create_container",
+    "start_container",
+    "mount_git_view",
+    "stop_container",
+    "remove_container",
+    "unmount_git_view",
+    "remove_intent",
+    "launch",
+    "release",
+    "reclaim",
+]
+effectful = [
+    "runtime::ContainerRuntime::create",
+    "runtime::ContainerRuntime::start",
+    "runtime::ContainerRuntime::stop",
+    "runtime::ContainerRuntime::remove",
+    "GitView::materialize",
+    "GitView::discard",
+]
+effectful_unnameable = []
+effect_free = [
+    "available",
+    "closed_by_a_reaper",
+    "collect",
+    "containers_with_label",
+    "image_by_id",
+    "image_by_reference",
+    "list_intents",
+    "new",
+    "observe",
+    "observe_terminated",
+    "orphan_window",
+    "phase",
+    "probe",
+    "read_intent",
+    "volume_present",
+]
+
 [[module]]
 path = "src/runner/invocation.rs"
 crate_path = "tactus::runner::invocation"
@@ -546,6 +599,13 @@ effect_free = [
     "process_creation_time",
     "run_with_timeout",
     "run_with_timeout_hooked",
+    # Writes a value into a process-local `OnceLock<Mutex<..>>` that every
+    # cleanup reaper started afterwards renders into argv before its `fork`.
+    # No effect outside this process: the reaper performs the effect, inside
+    # `Container.Stop`/`Container.Remove`'s own primitives, and only after its
+    # coordinator has died. The same classification `poison_ambient_for_tests`
+    # carries, for the same reason.
+    "set_container_reclaim_scope",
     "terminate_and_wait",
     "terminate_and_wait_with",
 ]
@@ -802,6 +862,10 @@ effect_free = [
 effect = [
     "_exit",
     "close",
+    # Rewrites the descriptor table of the process that calls it. The Unix
+    # reaper's container half puts its listing pipe on fd 1 with it, in the
+    # forked child before `execv`.
+    "dup2",
     "execl",
     "execle",
     "execlp",
@@ -916,6 +980,7 @@ not_an_effect = [
     "_SC_OPEN_MAX",
     "__errno_location",
     "__error",
+    "c_char",
     "c_int",
     "c_short",
     "c_void",

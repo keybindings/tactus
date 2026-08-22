@@ -36,7 +36,7 @@ use serde::Deserialize;
 use super::{
     ALLOWLIST_TOML, CLASSIFIED_MODULES, CLIPPY_TOML, DENIAL_CONTROL, DENIAL_FIXTURES,
     EFFECT_SITES_JSON, FROZEN_LEGACY_ALLOWLIST, FUNNEL_MODULES_JSON, REGENERATE,
-    RESIDUE_CLASSES_JSON, TOPOLOGY_MODULES, USED_GOVERNED_LINTS, WRAPPERS_TOML,
+    RESIDUE_CLASSES_JSON, TOPOLOGY_MODULES, USED_GOVERNED_LINTS, WRAPPERS_TOML, blank_comments,
     blank_comments_and_strings, externally_reachable_fns, governed_allows, legacy_growth,
     normalize_lint, production_region, topology_modules_among,
 };
@@ -575,13 +575,17 @@ fn every_allowlist_entry_carries_its_justification_and_names_a_real_file() {
             );
         }
     }
-    // Exactly one entry is a file the packet names and the tree does not have.
-    // A second would mean the allowlist had started describing a tree that does
-    // not exist.
-    assert_eq!(
-        absent,
-        vec!["src/runner/container.rs"],
-        "the absent set moved"
+    // **Empty since PR6.** It held exactly one entry — `src/runner/container.rs`,
+    // the file `FunnelGroup::Container.module()` names and PR5 did not have —
+    // and PR6 adds that file, so the allowlist now describes the tree it is in
+    // with nothing left over. A new entry appearing here would mean the
+    // allowlist had started describing a tree that does not exist.
+    assert_eq!(absent, Vec::<&str>::new(), "the absent set moved");
+    assert!(
+        repo_root().join("src/runner/container.rs").is_file(),
+        "the Container funnel is the entry that used to be absent; if it is gone \
+         again, this assertion is the one that says so rather than an empty set \
+         reading as agreement"
     );
 }
 
@@ -698,23 +702,88 @@ fn the_denylist_names_every_primitive_the_packet_enumerates() {
         );
     }
 
-    // "docker invocation helpers": there are none in this crate, and the
-    // absence is asserted rather than assumed. `FunnelGroup::Container.module()`
-    // is `src/runner/container.rs`, which PR6 adds; a docker program name
-    // appearing in production before then is a helper nobody classified.
-    let mut docker = Vec::new();
+    // "docker invocation helpers". PR6 adds them, so this is no longer an
+    // absence claim: exactly one production file may name a container runtime,
+    // and it is the module `FunnelGroup::Container.module()` names.
+    //
+    // **The predecessor of this block could not fail.** It searched
+    // `blank_comments_and_strings(...)` for `"docker` — and that function blanks
+    // string literals *including their quotes*, so the needle it looked for was
+    // one the haystack could never contain. Measured at PR6, when a real
+    // `const DOCKER_PROGRAM: &str = "docker"` landed in production and the
+    // census stayed green. The comparison is against the **unblanked**
+    // production region now, and the control below proves the needle is
+    // findable.
+    //
+    // The **set** of files is the claim, in the idiom of
+    // `runner::tests::every_production_process_start_is_classified`: a new file
+    // naming a container runtime is the finding, and every file in the set has
+    // a reason.
+    const NAMES_A_CONTAINER_RUNTIME: &[(&str, &str)] = &[
+        (
+            "src/effects/tests.rs",
+            "this census's own needle table, which is the one place the strings \
+             have to be written down",
+        ),
+        (
+            "src/runner/container.rs",
+            "the Container funnel: `FunnelGroup::Container.module()`, the one \
+             production file that may reach a container runtime, and the one \
+             `Command::new(` row in `every_production_process_start_is_classified`",
+        ),
+        (
+            "src/runner/container/fake.rs",
+            "the funnel's `#[cfg(test)]` substrate — the fake runtime and the \
+             Docker gate. Excluded from nothing by `production_region`, because \
+             the `#[cfg(test)]` marker is at the DECLARATION and not in the file",
+        ),
+        (
+            "src/runner/container/tests.rs",
+            "the funnel's `#[cfg(test)]` suite, for the same reason",
+        ),
+    ];
+    let expected: BTreeSet<&str> = NAMES_A_CONTAINER_RUNTIME
+        .iter()
+        .map(|(path, _)| *path)
+        .collect();
+    let mut naming: BTreeSet<String> = BTreeSet::new();
     for (path, source) in scanned_sources() {
-        let production = blank_comments_and_strings(&production_region(&source));
-        for needle in ["\"docker", "\"podman", "docker::", "bollard"] {
+        // Comments blanked and **strings kept**: the needle lives inside a
+        // string literal, so the sibling blanker would remove the very bytes
+        // this looks for. Comments are blanked because a doc comment quoting
+        // the packet's "docker ps" is prose, and a census that counted it would
+        // be the fifth `PR4-CENSUS-COMMENT-ORACLE`.
+        let production = blank_comments(&production_region(&source));
+        for needle in ["\"docker", "\"podman", "docker::", "bollard", "DockerCli"] {
             if production.contains(needle) {
-                docker.push(format!("{path}: {needle}"));
+                naming.insert(path.clone());
             }
         }
     }
-    assert!(
-        docker.is_empty(),
-        "a container invocation helper exists and the denylist does not name it: {docker:#?}"
+    assert_eq!(
+        naming,
+        expected.iter().map(|p| (*p).to_owned()).collect(),
+        "the set of files naming a container runtime moved. A new one is either \
+         a helper the denylist does not name, or a row this table needs"
     );
+
+    // And the helpers themselves are denied by name, which is the packet's
+    // actual requirement: the six effectful operations of the two seams the
+    // Container sites are primitives of.
+    for helper in [
+        "tactus::runner::container::runtime::ContainerRuntime::create",
+        "tactus::runner::container::runtime::ContainerRuntime::start",
+        "tactus::runner::container::runtime::ContainerRuntime::stop",
+        "tactus::runner::container::runtime::ContainerRuntime::remove",
+        "tactus::runner::container::GitView::materialize",
+        "tactus::runner::container::GitView::discard",
+    ] {
+        assert!(
+            methods.contains(helper),
+            "`{helper}` is a docker invocation helper and disallowed-methods does \
+             not name it"
+        );
+    }
 }
 
 /// A denied path that does not resolve enforces nothing, and clippy says so with
@@ -1851,18 +1920,13 @@ fn funnel_module(site: EffectSiteId) -> &'static str {
 /// key that defers it. They are written out rather than counted because *which*
 /// site is missing is the finding: a count would survive a swap.
 const SITES_WITHOUT_A_FUNNEL: &[&str] = &[
-    // The Container group in full. `FunnelGroup::Container.module()` is
-    // `src/runner/container.rs`, which is not in the tree: PR5 `non_goals[0]` is
-    // "production topology callers" and DESIGN's container runner is PR6's. The
-    // allowlist carries the module with `absent = true` and the packet key.
-    "Container.Create",
-    "Container.Start",
-    "Container.Stop",
-    "Container.Remove",
-    "Container.WriteIntent",
-    "Container.RemoveIntent",
-    "Container.MountGitView",
-    "Container.UnmountGitView",
+    // The **Container group is no longer here.** PR5 recorded all eight as
+    // unimplemented because `FunnelGroup::Container.module()` names
+    // `src/runner/container.rs` and that file was not in the tree; PR6 adds it,
+    // and every one of the eight is taken by value by an API in it. The group
+    // leaving this list is the finding that PR6 landed, and a variant coming
+    // back would mean a funnel stopped naming its site.
+    //
     // `ReportSite::Write` maps to `src/util.rs`, and the report write this slice
     // ships is `RunDir.WriteReport` in `src/rundir.rs` (`rundir::write_report`,
     // which calls `util::write_json`). `PR3-REPORT-DOUBLE-NAME` in
@@ -1975,6 +2039,10 @@ fn every_file_durability_barrier_in_a_funnel_module_goes_through_one_call() {
         "src/rundir.rs",
         "src/workspace_manager.rs",
         "src/events/log.rs",
+        // PR6's Container funnel writes the intent record durably and reaches
+        // the barrier through `util::fsync_file`/`util::fsync_dir` like every
+        // other funnel, so it belongs in the "and nowhere else" half.
+        "src/runner/container.rs",
     ];
     for path in FUNNELS {
         let source =
