@@ -1,0 +1,41 @@
+abi <abi/4.0>,
+include <tunables/global>
+
+# Grant user-namespace creation to bubblewrap only.
+#
+# WHY THIS EXISTS
+#
+# Ubuntu 24.04 ships kernel.apparmor_restrict_unprivileged_userns=1, which
+# blocks unprivileged user-namespace creation system-wide. bubblewrap needs a
+# user namespace to build its sandbox, so every sandboxed filesystem command
+# codex issues fails before launch:
+#
+#   bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted
+#   bwrap: setting up uid map: Permission denied
+#
+# Observed 2026-08-17: codex exec -s read-only could not read a 30-line
+# Cargo.toml. Text round-trips worked, which is why ~/bin/tactus-preflight
+# reported PASS and the gap surfaced only when a reviewer first needed to read
+# a file.
+#
+# SCOPE. This profile names /usr/bin/bwrap and nothing else. The system-wide
+# sysctl stays at 1, so every other unprivileged binary remains restricted.
+# That is the narrow fix: bubblewrap regains the capability it needs to BE a
+# sandbox, rather than the sandbox being bypassed with -s danger-full-access.
+#
+# flags=(unconfined) means AppArmor does not further confine bwrap itself —
+# bwrap is the confinement mechanism here, and confining the confiner is what
+# the upstream Ubuntu profiles for this class of tool also decline to do.
+#
+# REVERT
+#   sudo rm /etc/apparmor.d/bwrap && sudo systemctl reload apparmor
+#
+# VERIFY
+#   bwrap --ro-bind / / --unshare-net --dev /dev echo ok
+#   codex exec -s read-only -C /srv/tactus "read Cargo.toml and report edition"
+
+profile bwrap /usr/bin/bwrap flags=(unconfined) {
+  userns,
+
+  include if exists <local/bwrap>
+}

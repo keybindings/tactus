@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# =============================================================================
+# tactus-build — run a cargo command with CARGO_TARGET_DIR bound to a SLOT.
+# =============================================================================
+#
+# WHY THIS EXISTS
+#
+# Measured on this box, 2026-08-17, two worktrees at an identical commit:
+#
+#   source path differs, target path same   ->  54/55 hits  (98.18%)
+#   source path same,    target path differs->   0/55 hits  ( 0.00%)
+#
+# The sccache cache key is poisoned by CARGO_TARGET_DIR, not by the source
+# directory. Every rustc invocation carries -L dependency=<target>/debug/deps
+# and --extern name=<target>/debug/deps/libfoo.rlib, so a new target path means
+# a new key for every crate.
+#
+# The original guidance was CARGO_TARGET_DIR=/mnt/ramtarget/$(basename "$PWD"):
+# one target dir per worktree. That is an UNBOUNDED set of paths, so no two
+# worktrees ever share a cache entry -- which is exactly the 0% we measured.
+#
+# But per-worktree isolation was never the actual requirement. Cargo's directory
+# lock only conflicts between CONCURRENT builds. So we need one target dir per
+# concurrent build, not per worktree. A bounded pool of N slots gives:
+#
+#   - full isolation (a build holds its slot exclusively, no lock contention)
+#   - repeating paths (slot3 today hashes the same as slot3 yesterday) -> hits
+#
+# USAGE
+#   tactus-build cargo test --all-targets --all-features
+#   tactus-build cargo clippy --all-targets --all-features -- -D warnings
+#   TACTUS_SLOTS=16 tactus-build cargo build      # widen the pool
+#
+# Set TACTUS_SLOTS to at least your maximum concurrent build count. Too few and
+# builds queue; too many and you dilute the cache across more distinct paths.
+# =============================================================================
+set -uo pipefail
+
+[ -f "$HOME/.cargo/env" ]  && . "$HOME/.cargo/env"
+[ -f "$HOME/.tactus-env" ] && . "$HOME/.tactus-env"
+
+readonly SLOTS="${TACTUS_SLOTS:-8}"
+readonly BASE="${TACTUS_RAMTARGET:-/mnt/ramtarget}"
+readonly LOCKDIR="$BASE/.locks"
+
+if [ $# -eq 0 ]; then
+  echo "usage: tactus-build <command> [args...]" >&2
+  echo "  e.g. tactus-build cargo test --all-targets --all-features" >&2
+  exit 2
+fi
+
+mkdir -p "$BASE" "$LOCKDIR" 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# START THE SCCACHE SERVER FIRST. This is not an optimisation, it is a fix.
+#
+# flock(1) passes its open file descriptor through to the command it runs, and
+# that fd is what holds the lock. If cargo starts the sccache SERVER DAEMON
+# while we hold a slot lock, the daemon INHERITS the fd -- and because the
+# server is long-lived, it keeps the lock held after the build exits. The slot
+# then looks permanently busy forever.
+#
+# Observed 2026-08-17: after two builds, `fuser` showed the sccache server
+# holding slot1/.lock, so every later build skipped to slot2. Left unfixed it
+# walks through every slot and then queues, achieving zero reuse -- the exact
+# opposite of what this script exists for.
+#
+# Starting the server before we take any lock means it inherits nothing.
+# Harmless and idempotent if it is already running.
+# ---------------------------------------------------------------------------
+sccache --start-server >/dev/null 2>&1 || true
+
+# Locks live OUTSIDE the target dirs, so cargo never sees them and a wiped slot
+# does not destroy its own lock file.
+for i in $(seq 1 "$SLOTS"); do
+  d="$BASE/slot$i"
+  lock="$LOCKDIR/slot$i.lock"
+  mkdir -p "$d" 2>/dev/null || continue
+  : > "$lock" 2>/dev/null || true
+  # Acquire on a FD and HOLD it. The previous form probed with
+  # `flock -n "$lock" true` (which releases on exit) and then re-acquired with a
+  # blocking `flock`, leaving a window where another worker could take the slot.
+  # The loser then blocked on slot1 forever instead of trying slots 2-8.
+  # A lock held on an fd is inherited across exec, so this is the same lock.
+  exec {slotfd}>"$lock" 2>/dev/null || continue
+  if flock -n "$slotfd"; then
+    [ "${TACTUS_BUILD_QUIET:-}" = "1" ] || echo "tactus-build: slot$i  ($d)" >&2
+    exec env CARGO_TARGET_DIR="$d" "$@"
+  fi
+  exec {slotfd}>&-   # not ours; release before trying the next slot
+done
+
+# Every slot busy. Queue on slot1 rather than inventing a new path, which would
+# be a guaranteed cache miss for the entire build.
+d="$BASE/slot1"
+[ "${TACTUS_BUILD_QUIET:-}" = "1" ] || echo "tactus-build: all $SLOTS slots busy, queueing on slot1" >&2
+exec flock "$LOCKDIR/slot1.lock" env CARGO_TARGET_DIR="$d" "$@"

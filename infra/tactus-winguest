@@ -1,0 +1,236 @@
+#!/usr/bin/env bash
+# =============================================================================
+# tactus-winguest -- Windows Server 2025 guest for the Windows test leg
+# =============================================================================
+#
+# Builds and operates the KVM guest that lets
+#     ssh windowsguest 'cd /d C:\tactus && cargo test --all-targets --all-features'
+# surface Windows-only failures in minutes instead of after a push. CI already
+# covers windows-latest; this exists for SPEED, not coverage -- and Server 2025
+# is the same OS as GitHub's windows-latest image, so failures reproduce CI
+# faithfully.
+#
+# Subcommands (all idempotent; `up` chains the lot):
+#   fetch     download the Server 2025 eval ISO + virtio-win ISO if missing
+#   prep      repack the install ISO with efisys_noprompt.bin (see below)
+#   unattend  generate admin password + build the unattend ISO
+#   install   static DHCP lease + virt-install (returns immediately)
+#   wait      block until the guest finishes provisioning (up to 100 min)
+#   verify    toolchain sanity over ssh
+#   up        fetch prep unattend install wait verify
+#   status    domain state, IP, provision marker
+#   shot      screenshot the console to /tmp/winguest-console.png (debugging)
+#   destroy   tear down the domain + disk (ISOs are kept)
+#
+# WHY THE ISO IS REPACKED
+#   Microsoft's efisys.bin prints "Press any key to boot from CD or DVD" so
+#   that mid-install reboots fall through to the disk. Unattended, nobody is
+#   there to press the key. efisys_noprompt.bin (shipped ON the ISO) boots
+#   straight in; the fall-through job moves to boot ORDER: the blank virtio
+#   disk is boot.order=1 and the CD boot.order=2, so the CD only boots while
+#   the disk is still unbootable. Once setup writes the ESP, the disk wins
+#   every subsequent boot.
+#
+# WHY THE GUEST GETS THE HOST'S UNPUSHED WORK
+#   The guest repo is a clone of GitHub, but phase9's Windows leg pushes the
+#   host's HEAD to it before testing (receive.denyCurrentBranch=ignore is set
+#   by provisioning), so the thing under test is your local commits, not
+#   upstream. Uncommitted changes do NOT travel -- commit before running.
+#
+# SECRETS
+#   The admin password is generated once into ~/.tactus-winguest-pass (0600)
+#   and substituted into autounattend.xml only inside the generated unattend
+#   ISO, which lives in /var/lib/libvirt/images (root-owned). The template in
+#   the repo carries a placeholder. ssh uses the box's ed25519 key; the
+#   password is bootstrap/debug only.
+# =============================================================================
+set -euo pipefail
+
+readonly IMAGES=/var/lib/libvirt/images
+readonly WIN_ISO_URL='https://go.microsoft.com/fwlink/?linkid=2293312'   # Server 2025 eval, en-us
+readonly VIRTIO_ISO_URL='https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/virtio-win.iso'
+readonly WIN_ISO=$IMAGES/winsrv2025-eval.iso
+readonly NOPROMPT_ISO=$IMAGES/winsrv2025-noprompt.iso
+readonly VIRTIO_ISO=$IMAGES/virtio-win.iso
+readonly UNATTEND_ISO=$IMAGES/winguest-unattend.iso
+readonly DISK=$IMAGES/winguest.qcow2
+readonly VM=winguest
+readonly MAC='52:54:00:7a:c7:05'
+readonly IP='192.168.122.25'
+readonly PASSFILE=$HOME/.tactus-winguest-pass
+readonly MSRV=1.85.0
+# Template + provision script travel with setup.sh; staged here by phase 7.
+readonly SRC_DIR=${TACTUS_WINGUEST_SRC:-$HOME/winguest}
+
+readonly C_OK=$'\033[32m' C_ERR=$'\033[31m' C_WARN=$'\033[33m' C_OFF=$'\033[0m'
+ok()   { printf '  %s[ ok ]%s %s\n' "$C_OK" "$C_OFF" "$*"; }
+warn() { printf '  %s[warn]%s %s\n' "$C_WARN" "$C_OFF" "$*"; }
+die()  { printf '  %s[FAIL]%s %s\n' "$C_ERR" "$C_OFF" "$*" >&2; exit 1; }
+# On a fresh rebuild, phase 7's `usermod -aG libvirt` is not in this shell's
+# token yet (that needs a re-login), so qemu:///system would be denied. Fall
+# back to sudo in that window; after a re-login the plain path is used.
+if id -nG | grep -qw libvirt; then SUDO_VIRT=""; else SUDO_VIRT="sudo"; fi
+vsh()  { $SUDO_VIRT virsh -c qemu:///system "$@"; }
+
+# ---------------------------------------------------------------- fetch ------
+cmd_fetch() {
+  if sudo test -s "$WIN_ISO"; then
+    ok "$(basename "$WIN_ISO") present"
+  else
+    echo "  downloading Server 2025 eval ISO (~6 GB)..."
+    sudo curl -fL --retry 3 -o "$WIN_ISO" "$WIN_ISO_URL"
+    ok "downloaded $(basename "$WIN_ISO")"
+  fi
+  if sudo test -s "$VIRTIO_ISO"; then
+    ok "$(basename "$VIRTIO_ISO") present"
+  else
+    sudo curl -fL --retry 3 -o "$VIRTIO_ISO" "$VIRTIO_ISO_URL"
+    ok "downloaded $(basename "$VIRTIO_ISO")"
+  fi
+}
+
+# ----------------------------------------------------------------- prep ------
+cmd_prep() {
+  if sudo test -s "$NOPROMPT_ISO"; then ok "noprompt ISO present"; return 0; fi
+  local tree=$IMAGES/winsrv2025-tree mnt=/mnt/winiso
+  sudo mkdir -p "$mnt"
+  sudo mount -o loop,ro "$WIN_ISO" "$mnt"
+  # Assert image 2 is what autounattend.xml installs BEFORE spending 10
+  # minutes copying. A re-spun eval ISO with different ordering fails here.
+  local name
+  name=$(sudo wiminfo "$mnt/sources/install.wim" 2 | awk -F': *' '/^Name:/{print $2}')
+  # Eval WIM names are the SKU codes, not the marketing strings (verified on
+  # the 26100.1742 eval ISO): 1=SERVERSTANDARDCORE, 2=SERVERSTANDARD,
+  # 3=SERVERDATACENTERCORE, 4=SERVERDATACENTER. CORE last = Desktop Experience.
+  case "$name" in
+    *SERVERSTANDARDCORE) sudo umount "$mnt"; die "WIM index 2 is '$name' (Core) -- fix autounattend.xml.in INDEX" ;;
+    *SERVERSTANDARD)     ok "WIM index 2: $name (Standard + Desktop Experience)" ;;
+    *) sudo umount "$mnt"; die "WIM index 2 is '$name' -- fix autounattend.xml.in INDEX" ;;
+  esac
+  echo "  copying ISO tree (~6 GB)..."
+  sudo rm -rf "$tree"; sudo mkdir -p "$tree"
+  sudo rsync -a "$mnt/" "$tree/"
+  sudo umount "$mnt"
+  sudo test -f "$tree/efi/microsoft/boot/efisys_noprompt.bin" || die "efisys_noprompt.bin missing from ISO"
+  echo "  repacking with xorriso..."
+  sudo xorriso -as mkisofs -iso-level 4 \
+    -b boot/etfsboot.com -no-emul-boot -boot-load-size 8 \
+    -eltorito-alt-boot -e efi/microsoft/boot/efisys_noprompt.bin -no-emul-boot \
+    -V WINSRV2025_NOPROMPT -o "$NOPROMPT_ISO" "$tree" 2>/dev/null
+  sudo rm -rf "$tree"
+  ok "built $(basename "$NOPROMPT_ISO")"
+}
+
+# ------------------------------------------------------------- unattend ------
+cmd_unattend() {
+  [ -f "$SRC_DIR/autounattend.xml.in" ]     || die "missing $SRC_DIR/autounattend.xml.in"
+  [ -f "$SRC_DIR/winguest-provision.ps1" ]  || die "missing $SRC_DIR/winguest-provision.ps1"
+  if [ ! -s "$PASSFILE" ]; then
+    # Server enforces password complexity: the fixed prefix guarantees all
+    # four character classes; hex keeps the rest sed- and XML-safe.
+    ( umask 077; echo "Wg9!$(openssl rand -hex 12)" > "$PASSFILE" )
+    ok "generated admin password -> $PASSFILE"
+  fi
+  if [ ! -f "$HOME/.ssh/id_ed25519" ]; then
+    ssh-keygen -t ed25519 -N '' -f "$HOME/.ssh/id_ed25519" -C "tactusbox-to-winguest" >/dev/null
+    ok "generated ssh key"
+  fi
+  local pass stage
+  pass=$(cat "$PASSFILE")
+  stage=$(mktemp -d)
+  sed "s|@ADMIN_PASSWORD@|$pass|g" "$SRC_DIR/autounattend.xml.in" > "$stage/autounattend.xml"
+  grep -q '@ADMIN_PASSWORD@' "$stage/autounattend.xml" && die "password substitution failed"
+  cp "$SRC_DIR/winguest-provision.ps1" "$stage/"
+  cat "$HOME/.ssh/id_ed25519.pub" > "$stage/authorized_keys"
+  genisoimage -quiet -J -R -V UNATTEND -o "$stage/unattend.iso" \
+    "$stage/autounattend.xml" "$stage/winguest-provision.ps1" "$stage/authorized_keys"
+  sudo mv "$stage/unattend.iso" "$UNATTEND_ISO"
+  rm -rf "$stage"
+  ok "built $(basename "$UNATTEND_ISO")"
+}
+
+# -------------------------------------------------------------- install ------
+cmd_install() {
+  if vsh dominfo "$VM" >/dev/null 2>&1; then ok "domain $VM already defined"; return 0; fi
+  # Static lease so ~/.ssh/config can name a fixed IP. Idempotent via grep.
+  if ! vsh net-dumpxml default | grep -qi "$MAC"; then
+    vsh net-update default add-last ip-dhcp-host \
+      "<host mac='$MAC' name='$VM' ip='$IP'/>" --live --config
+    ok "static lease $IP for $MAC"
+  fi
+  # 16 vcpus / 24 G: half the box's threads, a fifth of its RAM -- enough for
+  # cargo's parallelism without starving the orchestrator or the tmpfs.
+  $SUDO_VIRT virt-install --connect qemu:///system \
+    --name "$VM" --memory 24576 --vcpus 16 --cpu host-passthrough \
+    --osinfo win2k25 \
+    --disk path="$DISK",size=120,format=qcow2,bus=virtio,cache=none,discard=unmap,boot.order=1 \
+    --disk path="$NOPROMPT_ISO",device=cdrom,bus=sata,readonly=on,boot.order=2 \
+    --disk path="$VIRTIO_ISO",device=cdrom,bus=sata,readonly=on \
+    --disk path="$UNATTEND_ISO",device=cdrom,bus=sata,readonly=on \
+    --network network=default,model=virtio,mac="$MAC" \
+    --channel unix,target.type=virtio,target.name=org.qemu.guest_agent.0 \
+    --graphics vnc,listen=127.0.0.1 \
+    --boot uefi \
+    --import --noautoconsole --wait 0 >/dev/null
+  ok "install launched (unattended; ~15-25 min install + ~20 min provisioning)"
+}
+
+# ----------------------------------------------------------------- wait ------
+cmd_wait() {
+  local deadline=$(( $(date +%s) + 6000 )) phase="boot"
+  echo '  waiting for provisioning to finish (marker C:\provision\DONE)...'
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    if [ "$phase" = boot ] && nc -z -w 2 "$IP" 22 2>/dev/null; then
+      phase=ssh; ok "port 22 open -- Windows is up, provisioning continues"
+    fi
+    if [ "$phase" = ssh ] && ssh -o BatchMode=yes -o ConnectTimeout=5 \
+         -o StrictHostKeyChecking=accept-new "Administrator@$IP" \
+         'type C:\provision\DONE' >/dev/null 2>&1; then
+      ok "provisioning complete"; return 0
+    fi
+    sleep 20
+  done
+  warn "timed out after 100 min. Debug with: $0 shot   (console screenshot)"
+  warn 'or: ssh Administrator@'"$IP"' "type C:\provision\provision.log"'
+  return 1
+}
+
+# --------------------------------------------------------------- verify ------
+cmd_verify() {
+  echo "  toolchain check over ssh..."
+  local out
+  out=$(ssh -o BatchMode=yes "Administrator@$IP" \
+    "git --version && rustc --version && cargo --version && rustup run $MSRV rustc --version") \
+    || die "toolchain check failed"
+  printf '%s\n' "$out" | sed 's/^/    /'
+  ok "git / rustc / cargo / MSRV all answer over ssh"
+  if out=$(ssh -o BatchMode=yes "Administrator@$IP" 'cd /d C:\tactus && git rev-parse --short HEAD' 2>/dev/null); then
+    ok 'C:\tactus at '"$out"
+  else
+    warn 'C:\tactus missing'
+  fi
+}
+
+# ---------------------------------------------------------------- misc -------
+cmd_status() {
+  vsh dominfo "$VM" 2>/dev/null | sed 's/^/  /' || { echo "  domain not defined"; return 0; }
+  vsh domifaddr "$VM" --source agent 2>/dev/null | sed 's/^/  /' || true
+  ssh -o BatchMode=yes -o ConnectTimeout=3 "Administrator@$IP" 'type C:\provision\DONE' >/dev/null 2>&1 \
+    && ok "provisioned" || warn "provision marker absent (or ssh down)"
+}
+cmd_shot() {
+  vsh screenshot "$VM" /tmp/winguest-console.png >/dev/null
+  ok "wrote /tmp/winguest-console.png"
+}
+cmd_destroy() {
+  vsh destroy "$VM" 2>/dev/null || true
+  vsh undefine "$VM" --nvram 2>/dev/null || true
+  sudo rm -f "$DISK"
+  ok "domain and disk removed (ISOs kept)"
+}
+cmd_up() { cmd_fetch; cmd_prep; cmd_unattend; cmd_install; cmd_wait; cmd_verify; }
+
+case "${1:-}" in
+  fetch|prep|unattend|install|wait|verify|up|status|shot|destroy) "cmd_$1" ;;
+  *) sed -n '5,25p' "$0"; exit 1 ;;
+esac

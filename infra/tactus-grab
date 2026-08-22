@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# =============================================================================
+# tactus-grab — pull a long string out of a tmux pane WITHOUT terminal wrapping.
+# =============================================================================
+#
+# WHY THIS EXISTS
+#
+# Anything longer than the pane width wraps, and selecting wrapped text by hand
+# silently truncates it. That failure mode cost real time on this box, three
+# separate times, and never announced itself:
+#
+#   - a 108-char OAuth token pasted as a 92-char fragment. Everything looked
+#     right (variable set, plausible length, correct prefix) and the API
+#     returned 401 on first use.
+#   - an OAuth URL cut mid-scope, producing "Unknown scope: use:mcp_servers"
+#   - the same URL cut before &state=, producing "Missing state parameter"
+#
+# In all three the underlying value was fine. Only the copy was broken, and the
+# error always pointed somewhere else.
+#
+# `tmux capture-pane -J` is NOT sufficient -- it returned a URL truncated
+# mid-word. tmux pads every line to the pane width, so you must strip trailing
+# whitespace BEFORE joining, or the fragments come back space-separated.
+#
+# USAGE
+#   tactus-grab                      # last URL in the orchestrator pane
+#   tactus-grab -t tactus:1          # a different pane
+#   tactus-grab -p 'sk-ant-[^ ]+'    # a different pattern
+#   tactus-grab -b                   # also load into the tmux paste buffer
+# =============================================================================
+set -uo pipefail
+
+PANE="tactus:0"
+PATTERN='https?://[^[:space:]]+'
+BUFFER=0
+SCROLL=-500
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -t) PANE="$2"; shift 2 ;;
+    -p) PATTERN="$2"; shift 2 ;;
+    -b) BUFFER=1; shift ;;
+    -s) SCROLL="$2"; shift 2 ;;
+    -h|--help) sed -n '/^# USAGE/,/^# ====/p' "$0" | sed 's/^# \?//'; exit 0 ;;
+    *) echo "unknown option: $1" >&2; exit 2 ;;
+  esac
+done
+
+if ! tmux has-session -t "${PANE%%:*}" 2>/dev/null; then
+  echo "tactus-grab: no such session: ${PANE%%:*}" >&2
+  exit 1
+fi
+
+# -J joins lines that tmux WRAPPED and leaves hard newlines intact. The previous
+# form used `tr -d '\n'`, which deleted every newline, so a wrapped URL followed
+# by a real line ("Paste code:") was welded into one string and the regex
+# returned the corrupted result as the credential URL. Frontier review of PR #19,
+# finding 10.
+match="$(tmux capture-pane -t "$PANE" -p -J -S "$SCROLL" \
+         | sed 's/[[:space:]]*$//' \
+         | grep -oE "$PATTERN" \
+         | tail -1)"
+
+if [ -z "$match" ]; then
+  echo "tactus-grab: nothing matching /$PATTERN/ in $PANE" >&2
+  exit 1
+fi
+
+printf '%s\n' "$match"
+printf -- '--- %s chars ---\n' "${#match}" >&2
+
+# Cheap sanity check for the specific failure this tool exists to prevent.
+case "$match" in
+  *oauth/authorize*)
+    printf '%s' "$match" | grep -q 'state='          || echo "WARNING: no state= -- still truncated" >&2
+    printf '%s' "$match" | grep -q 'code_challenge=' || echo "WARNING: no code_challenge= -- still truncated" >&2
+    ;;
+esac
+
+if [ "$BUFFER" = 1 ]; then
+  tmux set-buffer -- "$match"
+  echo "loaded into tmux buffer (paste with Ctrl-b ])" >&2
+fi

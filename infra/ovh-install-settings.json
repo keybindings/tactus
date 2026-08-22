@@ -1,0 +1,40 @@
+{
+  "_comment": "OVHcloud dedicated server install config (RISE-L / AMD Ryzen 9 9950X, 2x960GB NVMe soft RAID, Gravelines). Replay this through the OVHcloud API console BEFORE running setup.sh: the OS install happens before any shell exists, so setup.sh cannot reproduce it. Replace sshKey with your own public key first. THE LOAD-BEARING VALUE IS '\"mountPoint\": \"/\", \"size\": 0' -- 0 means 'use all remaining space', which is what yields ~890 GiB on / instead of OVH's default ~20 GB root with the bulk on /home. sccache lives in /var/cache and Docker in /var/lib, both under /, so a small root fills during the first real build.",
+  "operatingSystem": "ubuntu2404-server_64",
+  "storage": [
+    {
+      "diskGroupId": 1,
+      "hardwareRaid": [],
+      "partitioning": {
+        "disks": 2,
+        "layout": [
+          {
+            "fileSystem": "ext4",
+            "mountPoint": "/boot",
+            "size": 1024,
+            "raidLevel": 1,
+            "extras": {}
+          },
+          {
+            "fileSystem": "ext4",
+            "mountPoint": "/",
+            "size": 0,
+            "raidLevel": 1,
+            "extras": {}
+          },
+          {
+            "fileSystem": "swap",
+            "mountPoint": "swap",
+            "size": 512,
+            "raidLevel": 1,
+            "extras": {}
+          }
+        ]
+      }
+    }
+  ],
+  "customizations": {
+    "sshKey": "ssh-ed25519 <YOUR-PUBLIC-KEY-HERE> your-key-comment",
+    "enableLacpBonding": false
+  }
+}

@@ -1,0 +1,22 @@
+[Unit]
+Description=tactus long-lived tmux orchestrator session
+Documentation=file:/home/ubuntu/REPORT.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# tmux new-session -d returns immediately, so this is a oneshot that leaves the
+# tmux SERVER running behind it. RemainAfterExit keeps the unit "active" so
+# `systemctl --user status` reflects the session's existence rather than
+# reporting dead the instant the command returns.
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/home/ubuntu/bin/tactus-session
+# Do NOT kill the tmux server when the unit stops -- that would take the
+# orchestrator, and any 40-minute worker inside it, down with it.
+ExecStop=/bin/true
+KillMode=none
+Restart=no
+
+[Install]
+WantedBy=default.target

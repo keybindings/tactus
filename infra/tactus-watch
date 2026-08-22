@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+# =============================================================================
+# tactus-watch — run the CI gates whenever a watched branch gets a new commit.
+# =============================================================================
+#
+# Polls the remote, and when the branch SHA moves, checks that SHA out into a
+# DEDICATED gate worktree and runs ~/phase9.sh against it.
+#
+# WHY A SEPARATE WORKTREE
+#   /srv/tactus is your working tree. A watcher that reset it to origin would
+#   silently destroy uncommitted work -- exactly the failure this whole build has
+#   been trying to avoid. So the watcher only ever runs `git fetch` against
+#   /srv/tactus (which cannot touch the working tree) and does its checkout in
+#   $GATE_WT instead.
+#
+# CONCURRENCY
+#   flock'd. A run takes ~30s and the poll is every 2 min, but a slow build must
+#   never have a second copy started on top of it.
+#
+# OUTPUT
+#   ~/.tactus-watch.status   one line: PASS|FAIL <sha> <iso8601>
+#   ~/.tactus-watch.log      append-only history
+#   syslog                   tag tactus-watch (journalctl -t tactus-watch)
+#   MOTD                     via /etc/update-motd.d/99-tactus-preflight
+#
+# USAGE
+#   tactus-watch                 # poll once, run gates if the SHA moved
+#   tactus-watch --force         # run gates even if the SHA is unchanged
+#   tactus-watch --status        # print current state and exit
+# =============================================================================
+set -uo pipefail
+
+[ -f "$HOME/.cargo/env" ]  && . "$HOME/.cargo/env"
+[ -f "$HOME/.tactus-env" ] && . "$HOME/.tactus-env"
+export PATH="$HOME/bin:$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
+
+readonly REPO="${TACTUS_REPO:-/srv/tactus}"
+readonly BRANCH="${TACTUS_WATCH_BRANCH:-codex/parallelism-design}"
+readonly GATE_WT="${TACTUS_GATE_WT:-/srv/worktrees/gate}"
+readonly STATE="$HOME/.tactus-watch.state"
+readonly STATUS="$HOME/.tactus-watch.status"
+readonly LOG="$HOME/.tactus-watch.log"
+readonly LOCK="$HOME/.tactus-watch.lock"
+readonly GATE_LOG_DIR="$HOME/.tactus-watch-runs"
+
+now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+if [ "${1:-}" = "--status" ]; then
+  echo "branch:     $BRANCH"
+  echo "last seen:  $(cat "$STATE" 2>/dev/null || echo '(none)')"
+  echo "last result:$(cat "$STATUS" 2>/dev/null || echo ' (none)')"
+  echo "recent:"; tail -5 "$LOG" 2>/dev/null | sed 's/^/  /'
+  exit 0
+fi
+
+# Single instance. -n so a poll that lands mid-build exits rather than queueing.
+exec 9>"$LOCK"
+flock -n 9 || { echo "tactus-watch: already running, skipping"; exit 0; }
+
+mkdir -p "$GATE_LOG_DIR"
+
+# Fetch is safe: it never modifies a working tree.
+git -C "$REPO" fetch origin --prune --quiet 2>/dev/null || {
+  logger -t tactus-watch -p user.err "fetch failed for $REPO"
+  echo "tactus-watch: fetch FAILED"
+  exit 1
+}
+
+# --verify --quiet, and check the EXIT CODE. Plain `git rev-parse <unknown>`
+# echoes its argument back on stdout while erroring on stderr, so a
+# `[ -n "$sha" ]` test passes with the literal string "origin/<branch>" and the
+# script marches on to "run the gates" against a non-existent revision, then
+# reports a FAIL that is really a typo. Observed 2026-08-17 during the negative
+# test for this very script.
+remote_sha="$(git -C "$REPO" rev-parse --verify --quiet "origin/$BRANCH^{commit}")" || {
+  echo "tactus-watch: cannot resolve origin/$BRANCH -- not running gates"
+  logger -t tactus-watch -p user.err "cannot resolve origin/$BRANCH"
+  exit 1
+}
+last_sha="$(cat "$STATE" 2>/dev/null || echo '')"
+
+if [ "$remote_sha" = "$last_sha" ] && [ "${1:-}" != "--force" ]; then
+  exit 0   # nothing new; stay silent so cron does not spam
+fi
+
+short="$(git -C "$REPO" rev-parse --short "$remote_sha")"
+subject="$(git -C "$REPO" log -1 --format=%s "$remote_sha")"
+echo "tactus-watch: new commit on $BRANCH -> $short  ($subject)"
+logger -t tactus-watch "new commit $short on $BRANCH: $subject"
+
+# Point the gate worktree at the new SHA. Create it if this is the first run.
+if [ -d "$GATE_WT" ]; then
+  git -C "$GATE_WT" checkout --detach --force "$remote_sha" --quiet 2>/dev/null \
+    || { git -C "$REPO" worktree remove --force "$GATE_WT" 2>/dev/null
+         git -C "$REPO" worktree add --detach "$GATE_WT" "$remote_sha" --quiet; }
+else
+  mkdir -p "$(dirname "$GATE_WT")"
+  git -C "$REPO" worktree add --detach "$GATE_WT" "$remote_sha" --quiet
+fi
+# Clear anything a previous failed run left behind, so the gates see a clean tree.
+git -C "$GATE_WT" clean -fdx --quiet 2>/dev/null
+
+run_log="$GATE_LOG_DIR/${short}-$(date -u +%Y%m%dT%H%M%SZ).log"
+start=$(date +%s)
+"$HOME/phase9.sh" "$GATE_WT" >"$run_log" 2>&1
+rc=$?
+elapsed=$(( $(date +%s) - start ))
+
+ts="$(now)"
+if [ $rc -eq 0 ]; then
+  printf 'PASS %s %s\n' "$short" "$ts" > "$STATUS"
+  printf '%s PASS %s %ss %s\n' "$ts" "$short" "$elapsed" "$subject" >> "$LOG"
+  logger -t tactus-watch "GATES PASS $short (${elapsed}s)"
+  echo "tactus-watch: GATES PASS  $short  (${elapsed}s)"
+  grep -E "test result: ok" "$run_log" | head -1 | sed 's/^/  /'
+else
+  printf 'FAIL %s %s\n' "$short" "$ts" > "$STATUS"
+  printf '%s FAIL %s %ss %s\n' "$ts" "$short" "$elapsed" "$subject" >> "$LOG"
+  logger -t tactus-watch -p user.err "GATES FAIL $short (${elapsed}s): $subject"
+  echo "tactus-watch: GATES FAIL  $short  (${elapsed}s)"
+  grep -E "^\s+\[ FAIL \]" "$run_log" | sed 's/^/  /'
+  echo "  full log: $run_log"
+fi
+
+# Only advance the marker after a completed run, so a crash re-runs rather than
+# silently skipping a commit.
+printf '%s\n' "$remote_sha" > "$STATE"
+exit $rc

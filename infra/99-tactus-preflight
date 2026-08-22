@@ -1,0 +1,38 @@
+#!/bin/sh
+# MOTD banner: surface failing token preflight AND failing branch gates at login.
+#
+# The box has no MTA and no push channel, so a failing cron would otherwise only
+# reach syslog -- which nobody reads. This puts it in front of you the moment you
+# log in: token expiry and a red branch should both surface while you are at the
+# keyboard, not at hour four of an unattended run.
+PRE=/home/ubuntu/.tactus-preflight.status
+WATCH=/home/ubuntu/.tactus-watch.status
+
+printf '\n'
+
+# --- agent token preflight ---
+if [ -f "$PRE" ]; then
+  if head -1 "$PRE" | grep -q '^FAIL'; then
+    printf '\033[1;31m  PREFLIGHT FAILING\033[0m  agent CLIs cannot make calls\n'
+    sed -n '2,$p' "$PRE" | sed 's/^/    - /' | cut -c1-100
+    printf '    re-run: ~/bin/tactus-preflight\n'
+  else
+    printf '\033[32m  preflight PASS\033[0m  (%s)\n' "$(head -1 "$PRE" | awk '{print $2}')"
+  fi
+fi
+
+# --- watched branch CI gates ---
+if [ -f "$WATCH" ]; then
+  set -- $(head -1 "$WATCH")
+  result="$1"; sha="$2"; when="$3"
+  if [ "$result" = "FAIL" ]; then
+    printf '\033[1;31m  GATES FAILING\033[0m   %s  (%s)\n' "$sha" "$when"
+    printf '    last runs:\n'
+    tail -3 /home/ubuntu/.tactus-watch.log 2>/dev/null | sed 's/^/      /'
+    printf '    detail: ls -t ~/.tactus-watch-runs | head -1\n'
+  else
+    printf '\033[32m  gates PASS\033[0m      %s  (%s)\n' "$sha" "$when"
+  fi
+fi
+
+printf '\n'

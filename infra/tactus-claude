@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Start the orchestrator claude session in the current terminal.
+#
+# Deliberately NOT auto-started by the systemd unit. claude is an Ink TUI: it
+# sets up raw-mode stdin at startup, and if it starts in a pane with no attached
+# client there is nothing to set up. It renders but never reads a keystroke --
+# observed 2026-08-17, the selector would not move off the theme picker.
+# So the session is created empty and claude starts when a human is present.
+set -uo pipefail
+[ -f "$HOME/.cargo/env" ]  && . "$HOME/.cargo/env"
+[ -f "$HOME/.tactus-env" ] && . "$HOME/.tactus-env"
+cd "${1:-/srv/tactus}" || exit 1
+echo "orchestrator: $(pwd)  |  brief: ~/ORCHESTRATOR-BRIEF.md"
+exec claude

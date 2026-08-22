@@ -1,0 +1,394 @@
+#!/usr/bin/env bash
+# =============================================================================
+# tactus-preflight — prove BOTH agent CLIs can actually make a call, right now.
+# =============================================================================
+#
+# WHY LIVE CALLS AND NOTHING ELSE
+#   File existence lies: ~/.tactus-env can hold a 92-character fragment that
+#   looks perfectly plausible and returns 401 on first use. That happened during
+#   this box's build.
+#   `exp` claims lie: refresh tokens rotate, so a token whose expiry is in the
+#   future can still be dead.
+#   Exit codes lie: `codex login status` prints "Not logged in" and exits 0.
+#     Measured on codex-cli 0.147.0, 2026-08-17.
+#
+#   So every check below is either a real round-trip to the provider, or a
+#   string match on output. Never a file test, never a bare exit code.
+#
+# EXIT
+#   0  both CLIs completed a live round-trip
+#   1  one or more failed  (cron alerts on this)
+#
+# USAGE
+#   tactus-preflight            # run all checks
+#   tactus-preflight --quiet    # only print on failure (used by cron)
+# =============================================================================
+
+set -uo pipefail
+
+# Non-interactive shells get nothing from ~/.bashrc (it returns early), so the
+# environment must be sourced explicitly. Cron is even more barren than ssh.
+[ -f "$HOME/.cargo/env" ]  && . "$HOME/.cargo/env"
+[ -f "$HOME/.tactus-env" ] && . "$HOME/.tactus-env"
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+
+readonly MARKER="PREFLIGHT_OK_7Q2X"
+readonly STATUS_FILE="$HOME/.tactus-preflight.status"
+readonly LOG_FILE="$HOME/.tactus-preflight.log"
+readonly CALL_TIMEOUT=240
+readonly GH_REPO="${TACTUS_GH_REPO:-keybindings/tactus}"
+readonly QUIET="${1:-}"
+
+FAILURES=()
+START_TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+say()  { [ "$QUIET" = "--quiet" ] || printf '%s\n' "$*"; }
+ok()   { say "  [ ok ] $*"; }
+# Failures print on STDOUT, same stream as the section headers. Splitting them
+# across stdout/stderr interleaves unpredictably and makes a failure appear
+# under the wrong check, which is actively misleading when you are reading a
+# cron mail at 3am.
+bad()  { printf '  [FAIL] %s\n' "$*"; FAILURES+=("$*"); }
+
+say "tactus-preflight  $START_TS"
+say
+
+# ---------------------------------------------------------------------------
+# 1. Claude — token present at all (a precondition, NOT proof of anything)
+# ---------------------------------------------------------------------------
+say "[1/8] claude: token present"
+if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+  # Length and prefix only. The value is never printed, logged or transmitted.
+  ok "CLAUDE_CODE_OAUTH_TOKEN set (${#CLAUDE_CODE_OAUTH_TOKEN} chars, ${CLAUDE_CODE_OAUTH_TOKEN:0:13}...)"
+  if [ "${#CLAUDE_CODE_OAUTH_TOKEN}" -lt 100 ]; then
+    bad "token is suspiciously short (${#CLAUDE_CODE_OAUTH_TOKEN}); a truncated paste looks exactly like this"
+  fi
+else
+  bad "CLAUDE_CODE_OAUTH_TOKEN is empty or unset in ~/.tactus-env"
+fi
+
+# ---------------------------------------------------------------------------
+# 2. Claude — LIVE round-trip. This is the check that counts.
+# ---------------------------------------------------------------------------
+say "[2/8] claude: live round-trip"
+claude_out="$(timeout "$CALL_TIMEOUT" claude -p "Reply with exactly: ${MARKER}" 2>&1)"
+claude_rc=$?
+if [ $claude_rc -eq 124 ]; then
+  bad "claude -p timed out after ${CALL_TIMEOUT}s"
+elif printf '%s' "$claude_out" | grep -q "$MARKER"; then
+  ok "claude -p returned the marker"
+else
+  bad "claude -p did not return the marker (rc=$claude_rc): $(printf '%s' "$claude_out" | tail -2 | tr '\n' ' ')"
+fi
+
+# ---------------------------------------------------------------------------
+# 2b. Claude — the WORKERS' auth path, which is not the one checked above.
+#
+# This box has two independent Claude credentials and they can diverge silently:
+#
+#   ~/.tactus-env  CLAUDE_CODE_OAUTH_TOKEN  -- static, cannot refresh itself.
+#                                              Sourced by this script, so [2/8]
+#                                              above exercises THIS path.
+#   ~/.claude/.credentials.json               -- OAuth, auto-refreshing. Used by
+#                                              the orchestrator session and by
+#                                              EVERY `claude -p` worker, because
+#                                              workers run without the env var.
+#
+# So [2/8] can pass on a token no worker uses, and a half-completed rotation --
+# `/login` to a new account without rewriting ~/.tactus-env, or the reverse --
+# leaves this script certifying an account nothing runs on. That is the same
+# shape as [4b/8]: a check that exercised a path the real work did not, which
+# reported PASS for seven hours while every codex file read failed.
+#
+# Unsetting the variable for one call is what makes this the workers' path.
+# ---------------------------------------------------------------------------
+say "[2b/8] claude: workers' auth path (credentials file, env token unset)"
+worker_out="$(timeout "$CALL_TIMEOUT" env -u CLAUDE_CODE_OAUTH_TOKEN \
+  claude -p "Reply with exactly: ${MARKER}" 2>&1)"
+worker_rc=$?
+if [ $worker_rc -eq 124 ]; then
+  bad "claude -p on the workers' path timed out after ${CALL_TIMEOUT}s"
+elif printf '%s' "$worker_out" | grep -q "$MARKER"; then
+  ok "claude -p returned the marker without the env token -- workers can authenticate"
+else
+  bad "claude -p FAILED on the path every worker uses (rc=$worker_rc). [2/8] passing while this fails means ~/.claude/.credentials.json and ~/.tactus-env disagree: $(printf '%s' "$worker_out" | tail -2 | tr '\n' ' ')"
+fi
+
+# ---------------------------------------------------------------------------
+# 3. Codex — login status. Parse the TEXT; the exit code is worthless here.
+# ---------------------------------------------------------------------------
+say "[3/8] codex: login status"
+codex_status="$(timeout 60 codex login status 2>&1)"
+# Deliberately ignoring $? — it is 0 even when logged out.
+if printf '%s' "$codex_status" | grep -qi "not logged in"; then
+  bad "codex reports 'Not logged in' — run: codex login --device-auth"
+else
+  ok "codex login status: $(printf '%s' "$codex_status" | head -1)"
+fi
+
+# ---------------------------------------------------------------------------
+# 4. Codex — LIVE round-trip, in the same shape as the real review invocation.
+#
+#    -C points at a temp dir OUTSIDE any git repo, so --skip-git-repo-check is
+#    mandatory; without it codex exits "Not inside a trusted directory" before
+#    making any call, which would look like an auth failure and is not one.
+#    -s read-only + bubblewrap is the reviewer's containment; keep it here so
+#    the preflight exercises the same sandbox path as production.
+# ---------------------------------------------------------------------------
+say "[4/8] codex: live round-trip"
+tmp_dir="$(mktemp -d)"
+tmp_out="$(mktemp)"
+trap 'rm -rf "$tmp_dir" "$tmp_out"' EXIT
+
+codex_err="$(printf 'Reply with exactly: %s' "$MARKER" | timeout "$CALL_TIMEOUT" \
+  codex exec \
+    -m gpt-5.6-sol \
+    -c 'model_reasoning_effort="max"' \
+    --strict-config \
+    -s read-only \
+    --ephemeral \
+    --skip-git-repo-check \
+    -C "$tmp_dir" \
+    -o "$tmp_out" \
+    - 2>&1)"
+codex_rc=$?
+
+# ONLY the -o output file counts as proof.
+#
+# There was a stderr fallback here and it was WRONG: codex echoes the prompt
+# back in its error output, and the prompt contains the marker. So grepping
+# stderr passed while codex was demonstrably logged out -- a false pass, caught
+# by the negative test on 2026-08-17. Never reintroduce it. If the model did not
+# write to the file we asked it to write to, the round-trip did not happen.
+if [ $codex_rc -eq 124 ]; then
+  bad "codex exec timed out after ${CALL_TIMEOUT}s"
+elif grep -q "$MARKER" "$tmp_out" 2>/dev/null; then
+  ok "codex exec returned the marker"
+else
+  bad "codex exec did not return the marker (rc=$codex_rc): $(printf '%s' "$codex_err" | tail -2 | tr '\n' ' ')"
+fi
+
+# ---------------------------------------------------------------------------
+# 4b. codex FILE READ — the sandbox actually launching, not just the API.
+#
+#     Check 4 proves the model answers. It does NOT prove codex can read a file,
+#     because a text round-trip never invokes the filesystem tool path.
+#
+#     That gap was real and cost hours on 2026-08-17: Ubuntu 24.04 ships
+#     kernel.apparmor_restrict_unprivileged_userns=1, bubblewrap could not
+#     create a user namespace, and EVERY sandboxed file read failed with
+#       bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted
+#     while this script reported PASS. A reviewer agent that cannot read the
+#     tree is worthless, and the failure surfaced only when one first tried --
+#     seven hours into a slice. Fixed by /etc/apparmor.d/bwrap granting userns
+#     to bwrap alone; this check is what proves the fix is still in place.
+# ---------------------------------------------------------------------------
+say "[4b/8] codex: live FILE READ (proves the bwrap sandbox launches)"
+read_dir="$(mktemp -d)"
+read_out="$(mktemp)"
+printf '%s\n' "$MARKER" > "$read_dir/marker.txt"
+
+read_err="$(timeout "$CALL_TIMEOUT" \
+  codex exec \
+    -m gpt-5.6-sol \
+    -c 'model_reasoning_effort="low"' \
+    --strict-config \
+    -s read-only \
+    --ephemeral \
+    --skip-git-repo-check \
+    -C "$read_dir" \
+    -o "$read_out" \
+    'Read the file marker.txt in the current directory and reply with its exact contents and nothing else. If you cannot read it, reply with the exact error text you received.' 2>&1)"
+read_rc=$?
+
+# Same rule as check 4: only the -o file counts. And the marker must have come
+# FROM THE FILE -- it is not in the prompt, so a model that cannot read cannot
+# guess it. That is what makes this a genuine capability test rather than a
+# politeness test.
+if [ $read_rc -eq 124 ]; then
+  bad "codex file read timed out after ${CALL_TIMEOUT}s"
+elif grep -q "$MARKER" "$read_out" 2>/dev/null; then
+  ok "codex read a file through the sandbox"
+elif grep -qi 'bwrap\|RTM_NEWADDR\|uid map\|user namespace' "$read_out" "$read_err" 2>/dev/null; then
+  bad "codex sandbox cannot launch — check /etc/apparmor.d/bwrap and kernel.apparmor_restrict_unprivileged_userns"
+else
+  bad "codex did not return the file contents (rc=$read_rc): $(printf '%s' "$read_err" | tail -2 | tr '\n' ' ')"
+fi
+rm -rf "$read_dir" "$read_out"
+
+# ---------------------------------------------------------------------------
+# 7. Antigravity CLI (agy) — LIVE round-trip on the S9 panel's third seat.
+#
+#    Google shut Gemini CLI down on 2026-06-18; agy is the successor and the
+#    only supported path for a Pro/Ultra subscription. Four flags are all
+#    mandatory, each learned by having it fail:
+#      --output-format=json  text mode HANGS on a denied tool permission
+#                            (observed: >10 min on a `cat`); json returns a
+#                            structured ERROR in ~12 s. Never use text here.
+#      --add-dir=<dir>       without it the agent searches /workspace and
+#                            fails "search directory /workspace does not exist"
+#                            even though cwd is correct.
+#      --mode=plan           read-only agent mode. Unlike codex this needs no
+#                            bwrap, so the AppArmor/userns hazard does not
+#                            apply to this leg.
+#      --model=...-pro-high  a subscription that lapses or exhausts quota
+#                            silently serves Flash. [7b/8] asserts the model.
+#
+#    NOTE: `agy` exits 0 even when it produced nothing. The exit code is
+#    worthless; assert on the JSON status and the marker, exactly as [3/8]
+#    ignores codex's exit code.
+# ---------------------------------------------------------------------------
+say "[5/8] agy: live round-trip (Gemini 3.1 Pro)"
+AGY_MODEL="gemini-3.1-pro-high"
+agy_dir="$(mktemp -d)"
+agy_out="$(timeout "$CALL_TIMEOUT" agy --model="$AGY_MODEL" --mode=plan \
+  --add-dir="$agy_dir" --output-format=json --print-timeout=120s \
+  --print="Reply with exactly: ${MARKER}" 2>&1)"
+agy_rc=$?
+if [ $agy_rc -eq 124 ]; then
+  bad "agy round-trip timed out after ${CALL_TIMEOUT}s"
+elif printf '%s' "$agy_out" | grep -q "\"status\":\"SUCCESS\"" \
+  && printf '%s' "$agy_out" | grep -q "$MARKER"; then
+  ok "agy returned the marker ($(printf '%s' "$agy_out" | sed -n 's/.*"duration_seconds":\([0-9]*\)\..*/\1/p')s)"
+else
+  bad "agy round-trip FAILED: $(printf '%s' "$agy_out" | sed -n 's/.*"error":"\([^"]*\)".*/\1/p' | head -1)$(printf '%s' "$agy_out" | tail -1 | cut -c1-160)"
+fi
+
+# ---------------------------------------------------------------------------
+# 7b. agy — LIVE FILE READ, marker NOT in the prompt.
+#
+#     Same reason as [4b/8]: a reviewer that cannot read files does not fail,
+#     it AGREES WITH EVERYTHING. That is the seven-hour PR3 failure, and a
+#     panel makes it worse — a blind third seat manufactures false consensus.
+#     The marker is written to disk and never appears in the prompt, so a
+#     model that cannot read cannot fake it.
+# ---------------------------------------------------------------------------
+say "[5b/8] agy: live FILE READ (marker on disk, not in the prompt)"
+agy_mark="AGYREAD-$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+printf '%s\n' "$agy_mark" > "$agy_dir/marker.txt"
+read_out="$(timeout "$CALL_TIMEOUT" agy --model="$AGY_MODEL" --mode=plan \
+  --add-dir="$agy_dir" --output-format=json --print-timeout=120s \
+  --print="Read the file marker.txt and reply with only its exact contents." 2>&1)"
+read_rc=$?
+if [ $read_rc -eq 124 ]; then
+  bad "agy file read timed out after ${CALL_TIMEOUT}s"
+elif printf '%s' "$read_out" | grep -q "$agy_mark"; then
+  ok "agy read a file it was never told the contents of"
+else
+  bad "agy CANNOT READ FILES — it would review blind and approve everything: $(printf '%s' "$read_out" | sed -n 's/.*"error":"\([^"]*\)".*/\1/p' | head -1)"
+fi
+
+# ---------------------------------------------------------------------------
+# 8. agy — the model that ANSWERED is the model that was ASKED.
+#
+#     A lapsed or quota-exhausted subscription does not error; it serves
+#     Flash. A Flash reviewer in a frontier panel is a false third opinion,
+#     which is worse than an absent one because it manufactures consensus.
+#     `agy models` lists what the credential can actually reach, so a tier
+#     that no longer offers 3.1 Pro fails here rather than in a review.
+# ---------------------------------------------------------------------------
+say "[6/8] agy: ${AGY_MODEL} is offered AND is what actually answers"
+models_out="$(timeout 90 agy models 2>&1)"
+if printf '%s' "$models_out" | grep -q "$AGY_MODEL"; then
+  ok "$AGY_MODEL is listed by this credential"
+else
+  bad "$AGY_MODEL NOT offered — check the AI Pro subscription on this Google account"
+fi
+# Listing is not attribution. A quota fallback serves Flash while the entry is
+# still listed, so ask the model what it is on the pinned handle. Measured on
+# 2026-08-20: the pro handle answers "Gemini 3.1 Pro" and a flash handle answers
+# "Gemini 3.7 Flash", so this assertion can fail rather than being decorative.
+attrib_dir="$(mktemp -d)"
+attrib_out="$(timeout "$CALL_TIMEOUT" agy --model="$AGY_MODEL" --mode=plan \
+  --add-dir="$attrib_dir" --output-format=json --print-timeout=120s \
+  --print="State only your exact model name and version. No other words." 2>&1)"
+rm -rf "$attrib_dir"
+if printf '%s' "$attrib_out" | grep -qiE '3\.1[[:space:]]*pro'; then
+  ok "the model that answered identifies as 3.1 Pro"
+elif printf '%s' "$attrib_out" | grep -qi 'flash'; then
+  bad "SILENT DOWNGRADE: asked for $AGY_MODEL, a Flash model answered. The panel's third seat is not the model it claims"
+else
+  bad "could not attribute the responding model: $(printf '%s' "$attrib_out" | sed -n 's/.*"response":"\([^"]*\)".*/\1/p' | head -1 | cut -c1-80)"
+fi
+rm -rf "$agy_dir"
+
+# ---------------------------------------------------------------------------
+# 5. GitHub PAT — LIVE API round-trip.
+#
+#    The box pushes branches with a deploy key (git-only, no API) and opens PRs
+#    with this fine-grained PAT. Expiry is deliberately short (30 days), so this
+#    check is the thing that tells you it lapsed -- otherwise you find out when
+#    an agent silently fails to file a PR at hour four of a run.
+#
+#    Deliberately NOT checked: dispatch capability. This token must NOT be able
+#    to POST /dispatches, because that is what attests a frontier review, and
+#    only the repository owner may attest. Verified 2026-08-17: dispatch returns
+#    403 "Resource not accessible by personal access token". If that ever starts
+#    succeeding, the token has been over-scoped and an agent could attest its own
+#    work onto master. See check 6.
+# ---------------------------------------------------------------------------
+say "[7/8] github: live API round-trip"
+if [ -z "${GH_TOKEN:-}" ]; then
+  bad "GH_TOKEN is empty or unset in ~/.tactus-env"
+else
+  gh_out="$(timeout 60 gh api "repos/${GH_REPO}" --jq .full_name 2>&1)"
+  gh_rc=$?
+  if [ $gh_rc -eq 124 ]; then
+    bad "gh api timed out"
+  elif [ "$gh_out" = "$GH_REPO" ]; then
+    ok "gh api reached ${GH_REPO} (token ${#GH_TOKEN} chars, ${GH_TOKEN:0:11}...)"
+  else
+    bad "gh api failed (rc=$gh_rc): $(printf '%s' "$gh_out" | tail -1)"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# 6. GitHub PAT — NEGATIVE check: it must NOT be able to dispatch.
+#
+#    event_type=noop is safe: frontier-review.yml listens only for
+#    types:[frontier-review], so nothing triggers even if this were permitted.
+#    A 403 here is the PASS condition. This is a scope regression test, not a
+#    liveness check -- it fails loudly if someone widens the token to
+#    Contents:write, which would let the box attest its own reviews and land
+#    them on master unattended.
+# ---------------------------------------------------------------------------
+say "[8/8] github: token CANNOT attest (must be denied)"
+if [ -z "${GH_TOKEN:-}" ]; then
+  say "  [skip] no GH_TOKEN"
+else
+  disp_out="$(timeout 60 gh api "repos/${GH_REPO}/dispatches" -X POST -f event_type=noop 2>&1)"
+  if printf '%s' "$disp_out" | grep -q "403\|Resource not accessible"; then
+    ok "dispatch correctly denied (403) — token cannot attest a frontier review"
+  else
+    bad "SCOPE REGRESSION: token CAN dispatch. It can attest its own reviews and land on master. Narrow it to Pull requests:write."
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Result
+# ---------------------------------------------------------------------------
+END_TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+say
+
+if [ ${#FAILURES[@]} -eq 0 ]; then
+  printf 'PASS %s\n' "$END_TS" > "$STATUS_FILE"
+  printf '%s PASS\n' "$END_TS" >> "$LOG_FILE"
+  say "PASS — all three reviewer CLIs completed a live round-trip."
+  exit 0
+fi
+
+{
+  printf 'FAIL %s\n' "$END_TS"
+  printf '%s\n' "${FAILURES[@]}"
+} > "$STATUS_FILE"
+printf '%s FAIL (%s)\n' "$END_TS" "${FAILURES[*]}" >> "$LOG_FILE"
+
+# Alerting. No MTA and no push channel is configured on this box, so this is
+# deliberately local-only: syslog (journalctl -t tactus-preflight) plus a status
+# file that the login MOTD banner reads. If you want this on your phone, wire a
+# webhook in here -- that needs a URL only you can supply.
+logger -t tactus-preflight -p user.err "PREFLIGHT FAILED: ${FAILURES[*]}" 2>/dev/null || true
+
+printf '\nFAIL — %d check(s) failed:\n' "${#FAILURES[@]}" >&2
+printf '  - %s\n' "${FAILURES[@]}" >&2
+exit 1

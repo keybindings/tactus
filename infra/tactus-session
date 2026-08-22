@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# =============================================================================
+# tactus-session — create (idempotently) the long-lived orchestrator session.
+# =============================================================================
+#
+# One tmux session, created at boot by the tactus-session systemd USER service
+# and attached to by every ssh client. CameronPC, laptop, anywhere on the
+# tailnet: same windows, same scrollback, same running claude.
+#
+# Windows:
+#   0 orchestrator  claude, the session that drives the workflow
+#   1 shell         a plain shell in /srv/tactus, for everything else
+#   2 watch         live tail of the branch gate results
+#
+# Idempotent: if the session already exists this does nothing, so the service
+# can be restarted and .bashrc can call it on every login without harm.
+#
+# WINDOW 0 DOES NOT AUTO-START CLAUDE, deliberately.
+#
+# An earlier version ran `claude` here directly from the systemd unit. It
+# renders but never reads a keystroke. claude is an Ink TUI and sets up
+# raw-mode stdin at startup; this unit starts at BOOT, in a pane with no
+# attached client, so there is nothing to set up and it does not recover when a
+# client attaches later.
+#
+# Observed 2026-08-17: the first-run theme picker drew correctly but ignored
+# Enter, C-m and arrow keys indefinitely. The same pane accepted input
+# immediately once respawned as a plain shell, which is what ruled out tmux,
+# the pty and send-keys as causes.
+#
+# So the window is created as a shell and claude is started by `tactus-claude`
+# when a human is actually attached. Never auto-start an interactive TUI in a
+# pane that has no client.
+# =============================================================================
+set -uo pipefail
+
+[ -f "$HOME/.cargo/env" ]  && . "$HOME/.cargo/env"
+[ -f "$HOME/.tactus-env" ] && . "$HOME/.tactus-env"
+export PATH="$HOME/bin:$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
+
+readonly SESSION="${TACTUS_SESSION:-tactus}"
+readonly REPO="${TACTUS_REPO:-/srv/tactus}"
+
+if tmux has-session -t "$SESSION" 2>/dev/null; then
+  echo "tactus-session: '$SESSION' already exists"
+  exit 0
+fi
+
+echo "tactus-session: creating '$SESSION'"
+
+# Window 0 -- the orchestrator. A shell, not claude. See the note above.
+tmux new-session -d -s "$SESSION" -n orchestrator -c "$REPO" \
+  "echo 'Run: tactus-claude   (then: read ~/ORCHESTRATOR-BRIEF.md)'; exec bash"
+
+tmux new-window -t "$SESSION:1" -n shell -c "$REPO"
+tmux new-window -t "$SESSION:2" -n watch -c "$HOME" \
+  "echo 'branch gate results (tactus-watch):'; tail -n 20 -f ~/.tactus-watch.log; exec bash"
+
+# Land on the shell rather than dumping you straight into claude's TUI.
+tmux select-window -t "$SESSION:1"
+
+echo "tactus-session: '$SESSION' ready (windows: orchestrator, shell, watch)"
