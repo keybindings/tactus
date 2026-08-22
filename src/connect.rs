@@ -21,6 +21,10 @@
 //!   nothing. `--force` still carries the operator's own keys across, because
 //!   `profile`, `monthly_allowance` and `endpoint` are things discovery cannot
 //!   supply and replacing the file must not quietly delete.
+// LEGACY-EFFECT: this module is in the **frozen legacy section** of
+// `effects/allowlist.toml`, which carries its justification and the condition
+// under which the section shrinks. `decisions.effect_site_inventory.mechanism` (2).
+#![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
 
 use std::fmt::Write as _;
 use std::fs;
@@ -130,7 +134,13 @@ pub fn run_with<'a>(
         // Probe first: §14 already treats a missing or broken binary as a
         // refusal to start, and discovery on a CLI that cannot even report its
         // version would be reading tea leaves.
-        let discovered = adapter.probe().and_then(|caps| adapter.discover(&caps));
+        // Its own host Runner, for the reason `capacity` states: `connect`
+        // drives no run, so there is no run's boundary to borrow, and it is
+        // not a coordinator so its children are outside INV-18's ambient job.
+        let runner = crate::runner::host::HostRunner::new();
+        let discovered = adapter
+            .probe(&runner)
+            .and_then(|caps| adapter.discover(&runner, &caps));
         match discovered {
             Ok(discovery) => {
                 // D1's cross-check, at the moment the roster's provenance is
@@ -517,8 +527,8 @@ mod tests {
     use super::*;
     use crate::agent::{AgentAdapter, AuthState, Caps, ProcessOutput, TaskRun};
     use crate::ir::Outcome;
+    use crate::runner::CommandSpec;
     use std::path::Path;
-    use std::process::Command;
 
     /// A scripted stand-in, so these tests run on a machine with no agent CLI
     /// installed at all.
@@ -532,7 +542,7 @@ mod tests {
             self.id
         }
 
-        fn probe(&self) -> Result<Caps, TactusError> {
+        fn probe(&self, _runner: &dyn crate::runner::Runner) -> Result<Caps, TactusError> {
             if self.discovery.is_none() {
                 return Err(TactusError::Agent {
                     message: "binary not found on PATH".to_owned(),
@@ -549,7 +559,7 @@ mod tests {
             })
         }
 
-        fn build(&self, _run: &TaskRun) -> Result<Command, TactusError> {
+        fn build(&self, _run: &TaskRun) -> Result<CommandSpec, TactusError> {
             unreachable!("connect never spawns an attempt")
         }
 
@@ -557,7 +567,11 @@ mod tests {
             unreachable!("connect never parses an attempt")
         }
 
-        fn discover(&self, _caps: &Caps) -> Result<Discovery, TactusError> {
+        fn discover(
+            &self,
+            _runner: &dyn crate::runner::Runner,
+            _caps: &Caps,
+        ) -> Result<Discovery, TactusError> {
             self.discovery.clone().ok_or_else(|| TactusError::Agent {
                 message: "binary not found on PATH".to_owned(),
             })
@@ -877,12 +891,13 @@ mod tests {
         // §13's discovery is a claim about a real CLI, so it is checked against
         // one where the machine has it — and skipped cleanly where it does not,
         // which is the shape every other binary-touching test here takes.
-        let Ok(caps) = crate::agent::claude::ClaudeCodeAdapter.probe() else {
+        let runner = crate::runner::host::HostRunner::new();
+        let Ok(caps) = crate::agent::claude::ClaudeCodeAdapter.probe(&runner) else {
             eprintln!("skipped: no claude on PATH");
             return;
         };
         let discovery = crate::agent::claude::ClaudeCodeAdapter
-            .discover(&caps)
+            .discover(&runner, &caps)
             .expect("discovery never fails on a CLI that probes");
         // Whatever it answers, it must be one of the three states and it must
         // explain itself — including when the answer is "could not tell".

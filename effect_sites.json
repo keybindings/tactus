@@ -1,0 +1,1493 @@
+[
+  {
+    "site": "Worktree.CreateExecutionRoot",
+    "group": "worktree",
+    "row": "r18",
+    "domain": "external_physical",
+    "adjacent": {
+      "before": "run_started"
+    },
+    "observable_orders": [
+      "effect_before_event"
+    ],
+    "fault_row": "t_runstart",
+    "scope": "topology",
+    "module": "src/workspace_manager.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "Worktree.RemoveExecutionRoot",
+    "group": "worktree",
+    "row": "r18",
+    "domain": "external_physical",
+    "adjacent": {
+      "after": "run_finished"
+    },
+    "observable_orders": [
+      "event_before_effect"
+    ],
+    "fault_row": "t_finalize",
+    "scope": "topology",
+    "module": "src/workspace_manager.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "Worktree.WriteIntent",
+    "group": "worktree",
+    "row": "r9",
+    "domain": "external_physical",
+    "adjacent": {
+      "after": "task_dispatched"
+    },
+    "observable_orders": [
+      "event_before_effect"
+    ],
+    "fault_row": "t_dispatch",
+    "scope": "topology",
+    "module": "src/workspace_manager.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "Worktree.Add",
+    "group": "worktree",
+    "row": "r9",
+    "domain": "external_physical",
+    "adjacent": {
+      "after": "task_dispatched"
+    },
+    "observable_orders": [
+      "event_before_effect"
+    ],
+    "fault_row": "t_dispatch",
+    "scope": "topology",
+    "module": "src/workspace_manager.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": [
+      {
+        "class": "object_internal",
+        "label": "recovery_proven",
+        "classified_as": "internal",
+        "elements": [
+          "registered_unpopulated_worktree"
+        ]
+      }
+    ]
+  },
+  {
+    "site": "Worktree.Verify",
+    "group": "worktree",
+    "row": "r9",
+    "domain": "external_physical",
+    "adjacent": {
+      "before": "attempt_started"
+    },
+    "observable_orders": [
+      "effect_before_event"
+    ],
+    "fault_row": "t_retry",
+    "scope": "topology",
+    "module": "src/workspace_manager.rs",
+    "read_only": true,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "Worktree.Remove",
+    "group": "worktree",
+    "row": "r9",
+    "domain": "external_physical",
+    "adjacent": {
+      "after": "task_candidate_created"
+    },
+    "observable_orders": [
+      "event_before_effect"
+    ],
+    "fault_row": "t_scrub",
+    "scope": "topology",
+    "module": "src/workspace_manager.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "Worktree.RemoveIntent",
+    "group": "worktree",
+    "row": "r9",
+    "domain": "external_physical",
+    "adjacent": {
+      "after": "task_candidate_created"
+    },
+    "observable_orders": [
+      "event_before_effect"
+    ],
+    "fault_row": "t_scrub",
+    "scope": "topology",
+    "module": "src/workspace_manager.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "Worktree.WriteStagingIntent",
+    "group": "worktree",
+    "row": "r10",
+    "domain": "external_physical",
+    "adjacent": {
+      "before": "merge_verification_started"
+    },
+    "observable_orders": [
+      "effect_before_event"
+    ],
+    "fault_row": "t_proposal",
+    "scope": "topology",
+    "module": "src/workspace_manager.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "Worktree.AddStaging",
+    "group": "worktree",
+    "row": "r10",
+    "domain": "external_physical",
+    "adjacent": {
+      "before": "merge_verification_started"
+    },
+    "observable_orders": [
+      "effect_before_event"
+    ],
+    "fault_row": "t_proposal",
+    "scope": "topology",
+    "module": "src/workspace_manager.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": [
+      {
+        "class": "object_internal",
+        "label": "recovery_proven",
+        "classified_as": "internal",
+        "elements": [
+          "registered_unpopulated_worktree"
+        ]
+      }
+    ]
+  },
+  {
+    "site": "Worktree.RemoveStaging",
+    "group": "worktree",
+    "row": "r10",
+    "domain": "external_physical",
+    "adjacent": {
+      "after": "task_merged"
+    },
+    "observable_orders": [
+      "event_before_effect"
+    ],
+    "fault_row": "t_proposal",
+    "scope": "topology",
+    "module": "src/workspace_manager.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "Worktree.RemoveStagingIntent",
+    "group": "worktree",
+    "row": "r10",
+    "domain": "external_physical",
+    "adjacent": {
+      "after": "task_merged"
+    },
+    "observable_orders": [
+      "event_before_effect"
+    ],
+    "fault_row": "t_proposal",
+    "scope": "topology",
+    "module": "src/workspace_manager.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "Snapshot.WriteIntent",
+    "group": "snapshot",
+    "row": "r24",
+    "domain": "external_physical",
+    "adjacent": {
+      "after": "attempt_started"
+    },
+    "observable_orders": [
+      "event_before_effect"
+    ],
+    "fault_row": "t_attempt",
+    "scope": "topology",
+    "module": "src/workspace_manager.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "Snapshot.Add",
+    "group": "snapshot",
+    "row": "r24",
+    "domain": "external_physical",
+    "adjacent": {
+      "after": "attempt_started"
+    },
+    "observable_orders": [
+      "event_before_effect"
+    ],
+    "fault_row": "t_attempt",
+    "scope": "topology",
+    "module": "src/workspace_manager.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": [
+      {
+        "class": "object_internal",
+        "label": "recovery_proven",
+        "classified_as": "internal",
+        "elements": [
+          "registered_unpopulated_worktree"
+        ]
+      }
+    ]
+  },
+  {
+    "site": "Snapshot.Remove",
+    "group": "snapshot",
+    "row": "r24",
+    "domain": "external_physical",
+    "adjacent": {
+      "before": "attempt_finished"
+    },
+    "observable_orders": [
+      "effect_before_event"
+    ],
+    "fault_row": "t_scrub",
+    "scope": "topology",
+    "module": "src/workspace_manager.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "Snapshot.RemoveIntent",
+    "group": "snapshot",
+    "row": "r24",
+    "domain": "external_physical",
+    "adjacent": {
+      "before": "attempt_finished"
+    },
+    "observable_orders": [
+      "effect_before_event"
+    ],
+    "fault_row": "t_scrub",
+    "scope": "topology",
+    "module": "src/workspace_manager.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "Ref.CreateIntegration",
+    "group": "ref",
+    "row": "r21",
+    "domain": "external_physical",
+    "adjacent": {
+      "before": "run_started"
+    },
+    "observable_orders": [
+      "effect_before_event"
+    ],
+    "fault_row": "t_runstart",
+    "scope": "topology",
+    "module": "src/workspace_manager.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "Ref.CompareAndSwapIntegration",
+    "group": "ref",
+    "row": "r21",
+    "domain": "external_physical",
+    "adjacent": {
+      "before": "task_merged"
+    },
+    "observable_orders": [
+      "effect_before_event"
+    ],
+    "fault_row": "t_fast",
+    "scope": "topology",
+    "module": "src/workspace_manager.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "Ref.CreateCandidates",
+    "group": "ref",
+    "row": "r11",
+    "domain": "external_physical",
+    "adjacent": {
+      "before": "task_candidate_created"
+    },
+    "observable_orders": [
+      "effect_before_event"
+    ],
+    "fault_row": "t_cand_ref",
+    "scope": "topology",
+    "module": "src/workspace_manager.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "Ref.DeleteCandidatesRef",
+    "group": "ref",
+    "row": "r11",
+    "domain": "external_physical",
+    "adjacent": {
+      "after": "run_finished"
+    },
+    "observable_orders": [
+      "event_before_effect"
+    ],
+    "fault_row": "t_finalize",
+    "scope": "topology",
+    "module": "src/workspace_manager.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "Ref.PinCandidatePrepared",
+    "group": "ref",
+    "row": "r23",
+    "domain": "external_physical",
+    "adjacent": {
+      "before": "candidate_prepared"
+    },
+    "observable_orders": [
+      "effect_before_event"
+    ],
+    "fault_row": "t_cand_obj",
+    "scope": "topology",
+    "module": "src/workspace_manager.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "Ref.DeleteCandidatePin",
+    "group": "ref",
+    "row": "r23",
+    "domain": "external_physical",
+    "adjacent": {
+      "after": "task_candidate_created"
+    },
+    "observable_orders": [
+      "event_before_effect"
+    ],
+    "fault_row": "t_cand_ref",
+    "scope": "topology",
+    "module": "src/workspace_manager.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "Ref.PinPrepared",
+    "group": "ref",
+    "row": "r12",
+    "domain": "external_physical",
+    "adjacent": {
+      "before": "merge_verification_started"
+    },
+    "observable_orders": [
+      "effect_before_event"
+    ],
+    "fault_row": "t_proposal",
+    "scope": "topology",
+    "module": "src/workspace_manager.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "Ref.DeletePreparedPin",
+    "group": "ref",
+    "row": "r12",
+    "domain": "external_physical",
+    "adjacent": {
+      "after": "task_merged"
+    },
+    "observable_orders": [
+      "event_before_effect"
+    ],
+    "fault_row": "t_finalize",
+    "scope": "topology",
+    "module": "src/workspace_manager.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "Object.CandidateStage",
+    "group": "object",
+    "row": "r9",
+    "domain": "external_physical",
+    "adjacent": {
+      "after": "attempt_started"
+    },
+    "observable_orders": [
+      "event_before_effect"
+    ],
+    "fault_row": "t_attempt",
+    "scope": "topology",
+    "module": "src/workspace_manager.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": [
+      {
+        "class": "object_internal",
+        "label": "recovery_proven",
+        "classified_as": "internal",
+        "elements": [
+          "unreferenced_object",
+          "temporary_object_file",
+          "index_lock"
+        ]
+      }
+    ]
+  },
+  {
+    "site": "Object.CandidateWriteTree",
+    "group": "object",
+    "row": "r9",
+    "domain": "external_physical",
+    "adjacent": {
+      "after": "attempt_started"
+    },
+    "observable_orders": [
+      "event_before_effect"
+    ],
+    "fault_row": "t_attempt",
+    "scope": "topology",
+    "module": "src/workspace_manager.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": [
+      {
+        "class": "object_internal",
+        "label": "recovery_proven",
+        "classified_as": "internal",
+        "elements": [
+          "unreferenced_object",
+          "temporary_object_file",
+          "index_lock"
+        ]
+      }
+    ]
+  },
+  {
+    "site": "Object.SnapshotCommitTree",
+    "group": "object",
+    "row": "r27",
+    "domain": "external_physical",
+    "adjacent": {
+      "after": "attempt_started"
+    },
+    "observable_orders": [
+      "event_before_effect"
+    ],
+    "fault_row": "t_attempt",
+    "scope": "topology",
+    "module": "src/workspace_manager.rs",
+    "read_only": false,
+    "sub_effect_points": [
+      {
+        "point": "id_unread",
+        "platform": "any",
+        "modes": [
+          "kill"
+        ]
+      }
+    ],
+    "residue_classes": [
+      {
+        "class": "object_internal",
+        "label": "recovery_proven",
+        "classified_as": "internal",
+        "elements": [
+          "unreferenced_object",
+          "temporary_object_file"
+        ]
+      }
+    ]
+  },
+  {
+    "site": "Object.CandidateCommitTree",
+    "group": "object",
+    "row": "r27",
+    "domain": "external_physical",
+    "adjacent": {
+      "before": "candidate_prepared"
+    },
+    "observable_orders": [
+      "effect_before_event"
+    ],
+    "fault_row": "t_cand_obj",
+    "scope": "topology",
+    "module": "src/workspace_manager.rs",
+    "read_only": false,
+    "sub_effect_points": [
+      {
+        "point": "id_unread",
+        "platform": "any",
+        "modes": [
+          "kill"
+        ]
+      }
+    ],
+    "residue_classes": [
+      {
+        "class": "object_internal",
+        "label": "recovery_proven",
+        "classified_as": "internal",
+        "elements": [
+          "unreferenced_object",
+          "temporary_object_file"
+        ]
+      }
+    ]
+  },
+  {
+    "site": "Object.ProposalCherryPick",
+    "group": "object",
+    "row": "r10",
+    "domain": "external_physical",
+    "adjacent": {
+      "before": "merge_verification_started"
+    },
+    "observable_orders": [
+      "effect_before_event"
+    ],
+    "fault_row": "t_proposal",
+    "scope": "topology",
+    "module": "src/workspace_manager.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": [
+      {
+        "class": "object_internal",
+        "label": "recovery_proven",
+        "classified_as": "internal",
+        "elements": [
+          "unreferenced_object",
+          "temporary_object_file",
+          "index_lock",
+          "cherry_pick_head",
+          "merge_head",
+          "merge_msg",
+          "sequencer_state"
+        ]
+      }
+    ]
+  },
+  {
+    "site": "Object.RepairMaterialize",
+    "group": "object",
+    "row": "r9",
+    "domain": "external_physical",
+    "adjacent": {
+      "after": "task_dispatched"
+    },
+    "observable_orders": [
+      "event_before_effect"
+    ],
+    "fault_row": "t_repair_dispatch",
+    "scope": "topology",
+    "module": "src/workspace_manager.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": [
+      {
+        "class": "object_internal",
+        "label": "recovery_proven",
+        "classified_as": "internal",
+        "elements": [
+          "unreferenced_object",
+          "temporary_object_file",
+          "index_lock",
+          "cherry_pick_head"
+        ]
+      }
+    ]
+  },
+  {
+    "site": "RunDir.CreatePublicDir",
+    "group": "run_dir",
+    "row": "r21",
+    "domain": "external_physical",
+    "adjacent": {
+      "before": "run_started"
+    },
+    "observable_orders": [
+      "effect_before_event"
+    ],
+    "fault_row": "t_runstart",
+    "scope": "shared",
+    "module": "src/rundir.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "RunDir.StageMarker",
+    "group": "run_dir",
+    "row": "r21",
+    "domain": "external_physical",
+    "adjacent": {
+      "before": "run_started"
+    },
+    "observable_orders": [
+      "effect_before_event"
+    ],
+    "fault_row": "t_runstart",
+    "scope": "shared",
+    "module": "src/rundir.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "RunDir.PublishMarker",
+    "group": "run_dir",
+    "row": "r21",
+    "domain": "external_physical",
+    "adjacent": {
+      "before": "run_started"
+    },
+    "observable_orders": [
+      "effect_before_event"
+    ],
+    "fault_row": "t_runstart",
+    "scope": "shared",
+    "module": "src/rundir.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "RunDir.RemoveMarker",
+    "group": "run_dir",
+    "row": "r21",
+    "domain": "external_physical",
+    "adjacent": {
+      "after": "run_started"
+    },
+    "observable_orders": [
+      "event_before_effect"
+    ],
+    "fault_row": "t_runstart",
+    "scope": "shared",
+    "module": "src/rundir.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "RunDir.CreatePrivateDir",
+    "group": "run_dir",
+    "row": "r21",
+    "domain": "external_physical",
+    "adjacent": {
+      "before": "run_started"
+    },
+    "observable_orders": [
+      "effect_before_event"
+    ],
+    "fault_row": "t_runstart",
+    "scope": "shared",
+    "module": "src/rundir.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "RunDir.StageOwnerRecord",
+    "group": "run_dir",
+    "row": "r21",
+    "domain": "external_physical",
+    "adjacent": {
+      "before": "run_started"
+    },
+    "observable_orders": [
+      "effect_before_event"
+    ],
+    "fault_row": "t_runstart",
+    "scope": "shared",
+    "module": "src/rundir.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "RunDir.PublishOwnerRecord",
+    "group": "run_dir",
+    "row": "r21",
+    "domain": "external_physical",
+    "adjacent": {
+      "before": "run_started"
+    },
+    "observable_orders": [
+      "effect_before_event"
+    ],
+    "fault_row": "t_runstart",
+    "scope": "shared",
+    "module": "src/rundir.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "RunDir.StageCommitRecord",
+    "group": "run_dir",
+    "row": "r21",
+    "domain": "external_physical",
+    "adjacent": {
+      "before": "run_started"
+    },
+    "observable_orders": [
+      "effect_before_event"
+    ],
+    "fault_row": "t_runstart",
+    "scope": "shared",
+    "module": "src/rundir.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "RunDir.PublishCommitRecord",
+    "group": "run_dir",
+    "row": "r21",
+    "domain": "external_physical",
+    "adjacent": {
+      "before": "run_started"
+    },
+    "observable_orders": [
+      "effect_before_event"
+    ],
+    "fault_row": "t_runstart",
+    "scope": "shared",
+    "module": "src/rundir.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "RunDir.WritePlan",
+    "group": "run_dir",
+    "row": "r21",
+    "domain": "external_physical",
+    "adjacent": {
+      "before": "run_started"
+    },
+    "observable_orders": [
+      "effect_before_event"
+    ],
+    "fault_row": "t_runstart",
+    "scope": "shared",
+    "module": "src/rundir.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "RunDir.WriteReport",
+    "group": "run_dir",
+    "row": "r21",
+    "domain": "external_physical",
+    "adjacent": {
+      "after": "run_finished"
+    },
+    "observable_orders": [
+      "event_before_effect"
+    ],
+    "fault_row": "t_finalize",
+    "scope": "shared",
+    "module": "src/rundir.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "RunDir.WriteQuestionPayload",
+    "group": "run_dir",
+    "row": "r21",
+    "domain": "external_physical",
+    "adjacent": {
+      "before": "question_raised"
+    },
+    "observable_orders": [
+      "effect_before_event"
+    ],
+    "fault_row": "t_failed",
+    "scope": "shared",
+    "module": "src/rundir.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "RunDir.RemovePrivateHusk",
+    "group": "run_dir",
+    "row": "r21",
+    "domain": "external_physical",
+    "adjacent": "none",
+    "observable_orders": [],
+    "fault_row": "t_runstart",
+    "scope": "shared",
+    "module": "src/rundir.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "RunDir.RemovePublicHusk",
+    "group": "run_dir",
+    "row": "r21",
+    "domain": "external_physical",
+    "adjacent": "none",
+    "observable_orders": [],
+    "fault_row": "t_runstart",
+    "scope": "shared",
+    "module": "src/rundir.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "Event.OpenLog",
+    "group": "event",
+    "row": "r21",
+    "domain": "external_physical",
+    "adjacent": "none",
+    "observable_orders": [],
+    "fault_row": "t_append",
+    "scope": "shared",
+    "module": "src/events/log.rs",
+    "read_only": false,
+    "sub_effect_points": [
+      {
+        "point": "create",
+        "platform": "any",
+        "modes": [
+          "kill",
+          "error_return"
+        ]
+      },
+      {
+        "point": "truncate_torn_tail",
+        "platform": "any",
+        "modes": [
+          "kill",
+          "error_return"
+        ]
+      },
+      {
+        "point": "sync_prefix",
+        "platform": "any",
+        "modes": [
+          "kill",
+          "error_return"
+        ]
+      }
+    ],
+    "residue_classes": []
+  },
+  {
+    "site": "Event.ProvePrefixStable",
+    "group": "event",
+    "row": "r21",
+    "domain": "external_physical",
+    "adjacent": "none",
+    "observable_orders": [],
+    "fault_row": "t_append",
+    "scope": "shared",
+    "module": "src/events/log.rs",
+    "read_only": true,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "Event.AppendFirst",
+    "group": "event",
+    "row": "r21",
+    "domain": "external_physical",
+    "adjacent": "none",
+    "observable_orders": [],
+    "fault_row": "t_append",
+    "scope": "shared",
+    "module": "src/events/log.rs",
+    "read_only": false,
+    "sub_effect_points": [
+      {
+        "point": "written",
+        "platform": "any",
+        "modes": [
+          "kill",
+          "error_return"
+        ]
+      },
+      {
+        "point": "written_full",
+        "platform": "any",
+        "modes": [
+          "error_return"
+        ]
+      },
+      {
+        "point": "synced",
+        "platform": "any",
+        "modes": [
+          "kill",
+          "error_return"
+        ]
+      }
+    ],
+    "residue_classes": []
+  },
+  {
+    "site": "Event.Append",
+    "group": "event",
+    "row": "r21",
+    "domain": "external_physical",
+    "adjacent": "none",
+    "observable_orders": [],
+    "fault_row": "t_append",
+    "scope": "shared",
+    "module": "src/events/log.rs",
+    "read_only": false,
+    "sub_effect_points": [
+      {
+        "point": "written",
+        "platform": "any",
+        "modes": [
+          "kill",
+          "error_return"
+        ]
+      },
+      {
+        "point": "written_full",
+        "platform": "any",
+        "modes": [
+          "error_return"
+        ]
+      },
+      {
+        "point": "synced",
+        "platform": "any",
+        "modes": [
+          "kill",
+          "error_return"
+        ]
+      }
+    ],
+    "residue_classes": []
+  },
+  {
+    "site": "Event.AppendInformational",
+    "group": "event",
+    "row": "r21",
+    "domain": "external_physical",
+    "adjacent": "none",
+    "observable_orders": [],
+    "fault_row": "t_append",
+    "scope": "shared",
+    "module": "src/events/log.rs",
+    "read_only": false,
+    "sub_effect_points": [
+      {
+        "point": "written",
+        "platform": "any",
+        "modes": [
+          "kill",
+          "error_return"
+        ]
+      },
+      {
+        "point": "written_full",
+        "platform": "any",
+        "modes": [
+          "error_return"
+        ]
+      },
+      {
+        "point": "synced",
+        "platform": "any",
+        "modes": [
+          "kill",
+          "error_return"
+        ]
+      }
+    ],
+    "residue_classes": []
+  },
+  {
+    "site": "Event.LegacyOpenLog",
+    "group": "event",
+    "row": "r21",
+    "domain": "external_physical",
+    "adjacent": "none",
+    "observable_orders": [],
+    "fault_row": "t_append",
+    "scope": "legacy",
+    "module": "src/events/log.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "Event.LegacyAppend",
+    "group": "event",
+    "row": "r21",
+    "domain": "external_physical",
+    "adjacent": "none",
+    "observable_orders": [],
+    "fault_row": "t_append",
+    "scope": "legacy",
+    "module": "src/events/log.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "Answer.StageWrite",
+    "group": "answer",
+    "row": "r21",
+    "domain": "external_physical",
+    "adjacent": {
+      "before": "question_answered"
+    },
+    "observable_orders": [
+      "effect_before_event"
+    ],
+    "fault_row": "t_answer",
+    "scope": "shared",
+    "module": "src/interaction.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "Answer.PublishRename",
+    "group": "answer",
+    "row": "r21",
+    "domain": "external_physical",
+    "adjacent": {
+      "before": "question_answered"
+    },
+    "observable_orders": [
+      "effect_before_event"
+    ],
+    "fault_row": "t_answer",
+    "scope": "shared",
+    "module": "src/interaction.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "Answer.Ingest",
+    "group": "answer",
+    "row": "r21",
+    "domain": "external_physical",
+    "adjacent": {
+      "before": "question_answered"
+    },
+    "observable_orders": [
+      "effect_before_event"
+    ],
+    "fault_row": "t_answer",
+    "scope": "shared",
+    "module": "src/interaction.rs",
+    "read_only": true,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "Lock.AcquireRun",
+    "group": "lock",
+    "row": "r17",
+    "domain": "process_local_os",
+    "adjacent": {
+      "before": "run_started"
+    },
+    "observable_orders": [
+      "effect_before_event"
+    ],
+    "fault_row": "t_runstart",
+    "scope": "shared",
+    "module": "src/rundir.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "Lock.AcquireWorktree",
+    "group": "lock",
+    "row": "r17",
+    "domain": "process_local_os",
+    "adjacent": {
+      "before": "run_started"
+    },
+    "observable_orders": [
+      "effect_before_event"
+    ],
+    "fault_row": "t_runstart",
+    "scope": "shared",
+    "module": "src/rundir.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "Lock.ProbeCleanupExclusive",
+    "group": "lock",
+    "row": "r17",
+    "domain": "process_local_os",
+    "adjacent": {
+      "before": "run_started"
+    },
+    "observable_orders": [
+      "effect_before_event"
+    ],
+    "fault_row": "t_runstart",
+    "scope": "shared",
+    "module": "src/rundir.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "Lock.Release",
+    "group": "lock",
+    "row": "r17",
+    "domain": "process_local_os",
+    "adjacent": {
+      "after": "run_finished"
+    },
+    "observable_orders": [
+      "event_before_effect"
+    ],
+    "fault_row": "t_finalize",
+    "scope": "shared",
+    "module": "src/rundir.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "Lock.CreateWorktreeLockFile",
+    "group": "lock",
+    "row": "r25",
+    "domain": "external_physical",
+    "adjacent": {
+      "before": "run_started"
+    },
+    "observable_orders": [
+      "effect_before_event"
+    ],
+    "fault_row": "t_runstart",
+    "scope": "shared",
+    "module": "src/rundir.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "Lock.ObserveCleanupHold",
+    "group": "lock",
+    "row": "r28",
+    "domain": "process_local_os",
+    "adjacent": {
+      "before": "run_started"
+    },
+    "observable_orders": [
+      "effect_before_event"
+    ],
+    "fault_row": "t_runstart",
+    "scope": "shared",
+    "module": "src/rundir.rs",
+    "read_only": true,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "Report.Write",
+    "group": "report",
+    "row": "r21",
+    "domain": "external_physical",
+    "adjacent": {
+      "after": "run_finished"
+    },
+    "observable_orders": [
+      "event_before_effect"
+    ],
+    "fault_row": "t_finalize",
+    "scope": "shared",
+    "module": "src/util.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "Process.Spawn",
+    "group": "process",
+    "row": "r22",
+    "domain": "process_local_os",
+    "adjacent": {
+      "after": "attempt_started"
+    },
+    "observable_orders": [
+      "event_before_effect"
+    ],
+    "fault_row": "t_attempt",
+    "scope": "topology",
+    "module": "src/runner/host.rs",
+    "read_only": false,
+    "sub_effect_points": [
+      {
+        "point": "ambient_job_joined",
+        "platform": "windows",
+        "modes": [
+          "kill",
+          "error_return"
+        ]
+      },
+      {
+        "point": "created_suspended",
+        "platform": "windows",
+        "modes": [
+          "kill"
+        ]
+      },
+      {
+        "point": "private_job_assigned",
+        "platform": "windows",
+        "modes": [
+          "kill"
+        ]
+      },
+      {
+        "point": "resumed",
+        "platform": "windows",
+        "modes": [
+          "kill"
+        ]
+      },
+      {
+        "point": "reaper_started",
+        "platform": "unix",
+        "modes": [
+          "kill"
+        ]
+      },
+      {
+        "point": "pre_exec_pgid_and_register",
+        "platform": "unix",
+        "modes": [
+          "kill"
+        ]
+      },
+      {
+        "point": "exec",
+        "platform": "unix",
+        "modes": [
+          "kill"
+        ]
+      },
+      {
+        "point": "registered",
+        "platform": "unix",
+        "modes": [
+          "kill"
+        ]
+      }
+    ],
+    "residue_classes": []
+  },
+  {
+    "site": "Process.Terminate",
+    "group": "process",
+    "row": "r22",
+    "domain": "process_local_os",
+    "adjacent": {
+      "before": "attempt_finished"
+    },
+    "observable_orders": [
+      "effect_before_event"
+    ],
+    "fault_row": "t_attempt",
+    "scope": "topology",
+    "module": "src/runner/host.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "Container.WriteIntent",
+    "group": "container",
+    "row": "r26",
+    "domain": "external_physical",
+    "adjacent": {
+      "after": "attempt_started"
+    },
+    "observable_orders": [
+      "event_before_effect"
+    ],
+    "fault_row": "t_container",
+    "scope": "topology",
+    "module": "src/runner/container.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "Container.Create",
+    "group": "container",
+    "row": "r26",
+    "domain": "external_physical",
+    "adjacent": {
+      "after": "attempt_started"
+    },
+    "observable_orders": [
+      "event_before_effect"
+    ],
+    "fault_row": "t_container",
+    "scope": "topology",
+    "module": "src/runner/container.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "Container.Start",
+    "group": "container",
+    "row": "r26",
+    "domain": "external_physical",
+    "adjacent": {
+      "after": "attempt_started"
+    },
+    "observable_orders": [
+      "event_before_effect"
+    ],
+    "fault_row": "t_container",
+    "scope": "topology",
+    "module": "src/runner/container.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "Container.MountGitView",
+    "group": "container",
+    "row": "r19",
+    "domain": "external_physical",
+    "adjacent": {
+      "after": "attempt_started"
+    },
+    "observable_orders": [
+      "event_before_effect"
+    ],
+    "fault_row": "t_container",
+    "scope": "topology",
+    "module": "src/runner/container.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "Container.Stop",
+    "group": "container",
+    "row": "r26",
+    "domain": "external_physical",
+    "adjacent": {
+      "before": "attempt_finished"
+    },
+    "observable_orders": [
+      "effect_before_event"
+    ],
+    "fault_row": "t_container",
+    "scope": "topology",
+    "module": "src/runner/container.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "Container.Remove",
+    "group": "container",
+    "row": "r26",
+    "domain": "external_physical",
+    "adjacent": {
+      "before": "attempt_finished"
+    },
+    "observable_orders": [
+      "effect_before_event"
+    ],
+    "fault_row": "t_container",
+    "scope": "topology",
+    "module": "src/runner/container.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "Container.UnmountGitView",
+    "group": "container",
+    "row": "r19",
+    "domain": "external_physical",
+    "adjacent": {
+      "before": "attempt_finished"
+    },
+    "observable_orders": [
+      "effect_before_event"
+    ],
+    "fault_row": "t_container",
+    "scope": "topology",
+    "module": "src/runner/container.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  },
+  {
+    "site": "Container.RemoveIntent",
+    "group": "container",
+    "row": "r26",
+    "domain": "external_physical",
+    "adjacent": {
+      "before": "attempt_finished"
+    },
+    "observable_orders": [
+      "effect_before_event"
+    ],
+    "fault_row": "t_container",
+    "scope": "topology",
+    "module": "src/runner/container.rs",
+    "read_only": false,
+    "sub_effect_points": [],
+    "residue_classes": []
+  }
+]

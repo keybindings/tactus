@@ -4,6 +4,10 @@
 //! time against live capacity. Step 1 has no capacity engine, so every rung
 //! carries a catalog-derived example binding tagged `preview` (or the pinned
 //! binding tagged `pin`).
+// LEGACY-EFFECT: this module is in the **frozen legacy section** of
+// `effects/allowlist.toml`, which carries its justification and the condition
+// under which the section shrinks. `decisions.effect_site_inventory.mechanism` (2).
+#![allow(clippy::disallowed_methods)]
 
 use std::fmt;
 

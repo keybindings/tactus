@@ -9,6 +9,10 @@
 //! The plan comes from the run's own `plan.normalized.json` rather than from
 //! the plan file on disk: §5 freezes a plan at run start, and status should
 //! describe the run that happened even if the source plan has since moved on.
+// LEGACY-EFFECT: this module is in the **frozen legacy section** of
+// `effects/allowlist.toml`, which carries its justification and the condition
+// under which the section shrinks. `decisions.effect_site_inventory.mechanism` (2).
+#![allow(clippy::disallowed_methods, clippy::disallowed_types)]
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -65,10 +69,47 @@ impl RunStatus {
     }
 }
 
+/// What `status` says about a husk id, or `None` if `wanted` names no husk.
+///
+/// Read-only end to end, and it never resolves a husk into a run: the answer
+/// is the refusal, carrying which of the three kinds of husk this is, its
+/// reason and its private locator. The authorized private root is the default
+/// one, which is the root a read-only command is configured with.
+fn husk_answer(repo_root: &Path, wanted: &str) -> Option<TactusError> {
+    let husk_id = rundir::list_husks(repo_root)
+        .into_iter()
+        .find(|id| id.eq_ignore_ascii_case(wanted))?;
+    let repo_key = rundir::RepoKey::for_repo(repo_root).ok()?;
+    let report = rundir::husk_report(
+        repo_root,
+        &husk_id,
+        &repo_key,
+        &rundir::default_private_root(),
+    );
+    let locator = report.locator.as_ref().map_or_else(
+        || " It records no private locator.".to_owned(),
+        |path| format!(" Its private locator is {}.", path.display()),
+    );
+    Some(TactusError::Refused {
+        message: format!(
+            "run `{husk_id}` never recorded a committed run_started: it is {}.{locator}",
+            report.disposition.describe()
+        ),
+    })
+}
+
 /// Load a run: the newest one, or any unambiguous id prefix.
 pub fn load(repo_root: &Path, run_id: Option<&str>) -> Result<RunStatus, TactusError> {
     let run_id = match run_id {
-        Some(wanted) => rundir::resolve_run_id(repo_root, wanted)?,
+        Some(wanted) => match rundir::resolve_run_id(repo_root, wanted) {
+            Ok(resolved) => resolved,
+            // `startup_census`: "status is read-only: it ignores husks and,
+            // asked explicitly for a husk id, reports an unstarted husk that
+            // the next write command reclaims, a retained husk with its reason
+            // and locator, or a possibly committed run whose public log has no
+            // valid committed first line".
+            Err(error) => return Err(husk_answer(repo_root, wanted).unwrap_or(error)),
+        },
         None => rundir::latest_run(repo_root).ok_or_else(|| TactusError::Refused {
             message: format!(
                 "no runs found under {} — nothing has run in this repository yet",
@@ -512,6 +553,56 @@ mod tests {
             ts: "2026-08-09T14:03:07Z".to_owned(),
             body,
         }
+    }
+
+    /// `load` composes `resolve_run_id`'s refusal with `rundir::husk_report`,
+    /// and a composition nobody drives is the shape `PR4-CONF-008` was: both
+    /// halves were tested and their join was not. So this asks `status` itself.
+    #[test]
+    fn status_asked_for_a_husk_id_names_which_husk_it_is() {
+        let root = std::env::temp_dir().join(format!(
+            "tactus-status-husk-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|since| since.as_nanos())
+                .unwrap_or_default()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("scratch");
+        // A real repository, because the husk answer takes this repository's
+        // key over its canonical common git dir.
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["init", "-q", "-b", "main"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("git runs");
+        assert!(status.success(), "git init");
+
+        let husk = "01STATUSHUSK00000000000000";
+        std::fs::create_dir_all(rundir::public_dir(&root, husk)).expect("husk");
+        let Err(error) = load(&root, Some(husk)) else {
+            panic!("a husk is not a run and status must not load one");
+        };
+        let said = error.to_string();
+        assert!(said.contains(husk), "names the id: {said}");
+        assert!(
+            said.contains("never recorded a committed run_started"),
+            "says why: {said}"
+        );
+        assert!(
+            said.contains("unstarted husk"),
+            "and which of the three it is: {said}"
+        );
+        assert!(
+            said.contains("records no private locator"),
+            "and its locator, or that there is none: {said}"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

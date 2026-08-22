@@ -1,0 +1,947 @@
+# The wrapper classification.
+#
+# `decisions.effect_site_inventory.mechanism` (3): "at PR5 every pubfn of a legacy
+# or shared module is classified effectful or effect-free by review; effectful
+# wrappers are added to the disallowed list themselves, so a topology module
+# cannot reach an effect through a legacy wrapper while legacy modules keep
+# calling them under their module allow".
+#
+# FOUR CLASSES, not two, because "effectful" alone loses the distinction the same
+# sentence draws two clauses later ("EventLog::open and EventLog::append are
+# classified as the Event funnel (site-taking) rather than as wrappers"):
+#
+#   funnel                -- issues its effect inside a site-taking funnel call.
+#                            NOT denied: it is the sanctioned path.
+#   effectful             -- reaches an effect, takes no site, and is nameable as
+#                            a path. DENIED in clippy.toml; the test
+#                            `every_effectful_wrapper_is_on_the_disallowed_list`
+#                            asserts both directions.
+#   effectful_unnameable  -- reaches an effect and cannot be named by a clippy
+#                            path: a private module, a trait-dispatched method,
+#                            or the binary crate root. Privacy or dispatch
+#                            already denies it to a topology module; recorded so
+#                            the absence from clippy.toml is a decision.
+#   effect_free           -- reaches no effect of its own.
+#
+# THE BOUNDARY, STATED. This classifies reach at the MODULE'S OWN BOUNDARY: a fn
+# whose own body performs or hands out an effect. It is not the transitive
+# closure over the crate, because the transitive closure of "reaches an effect"
+# in a program whose purpose is to perform effects is the whole program -- it
+# would deny `engine::run_harness` and every CLI entry point beneath it. The
+# residue that leaves is exactly one thing: a topology module reaching an effect
+# through a chain of undenied public functions, and that is closed from the other
+# end by `effects::tests::no_topology_module_calls_a_funnel_in_production`.
+#
+# Regenerate the membership (never the classification) with
+# TACTUS_REGENERATE_EFFECT_ARTIFACTS=1 cargo test -p tactus effects::
+
+[[module]]
+path = "src/workspace_manager.rs"
+crate_path = "tactus::workspace_manager"
+funnel = [
+    "add_site",
+    "add_worktree",
+    "candidate_commit_tree",
+    "candidate_stage",
+    "candidate_write_tree",
+    "compare_and_swap_ref",
+    "create_execution_root",
+    "create_ref_zero_old",
+    "delete_ref_expected_old",
+    "proposal_cherry_pick",
+    "remove_execution_root",
+    "remove_intent_site",
+    "remove_site",
+    "repair_materialize",
+    "residue_classified_sites",
+    "snapshot_commit_tree",
+    "verify_worktree",
+    "write_intent_site",
+]
+effectful = []
+effectful_unnameable = []
+effect_free = [
+    "add_snapshot",
+    "as_str",
+    "assert_publishable",
+    "at",
+    "base",
+    "changed_paths",
+    "classify_object_residue",
+    "common_git_dir",
+    "decode_changed_paths",
+    "derive",
+    "direct_ref_target",
+    "durability_ledger",
+    "element_breaks_quiescence",
+    "execution_root",
+    "execution_root_of",
+    "fmt",
+    "from",
+    "from_base",
+    "gates",
+    "harness",
+    "integration",
+    "intent_name",
+    "intent_path",
+    "intents",
+    "is_null_object_id",
+    "is_object_id",
+    "kind",
+    "ledger",
+    "new",
+    "object_directory",
+    "observed_residue_elements",
+    "phase",
+    "private_root",
+    "published",
+    "quiescence",
+    "reclaim_intents",
+    "recording_durability",
+    "refs_under",
+    "refuse_unexpected_refs",
+    "relative",
+    "remove_intent",
+    "remove_snapshot",
+    "remove_worktree",
+    "repo_key",
+    "repo_key_v1",
+    "repository",
+    "revalidate",
+    "review",
+    "row",
+    "slot_path",
+    "temporary_object_files",
+    "unreachable_objects",
+    "worktree",
+    "worktree_records",
+    "write_intent",
+]
+
+[[module]]
+path = "src/rundir.rs"
+crate_path = "tactus::rundir"
+funnel = [
+    "acquire_hooked",
+    "acquire_in_hooked",
+    "create_private_dir",
+    "create_public_dir",
+    "ingest_answer",
+    "observe_cleanup_hold",
+    "publish_answer",
+    "publish_commit_record",
+    "publish_marker",
+    "publish_owner_record",
+    "release",
+    "remove_marker",
+    "remove_private_husk",
+    "remove_public_husk",
+    "stage_answer",
+    "stage_commit_record",
+    "stage_marker",
+    "stage_owner_record",
+    "write_plan",
+    "write_question_payload",
+    "write_report",
+]
+effectful = []
+effectful_unnameable = [
+    "is_held",
+    "take",
+]
+effect_free = [
+    "acquire",
+    "acquire_in",
+    "active_cleanup_lease_paths",
+    "active_paths",
+    "answers",
+    "artifacts",
+    "as_str",
+    "classify_run_dir",
+    "commit_record_after_error",
+    "create",
+    "create_hooked",
+    "default_private_root",
+    "describe",
+    "drop",
+    "durability_ledger",
+    "enter",
+    "enter_cleanup_scope",
+    "events",
+    "find_question",
+    "fmt",
+    "for_repo",
+    "for_worktree_git_dir",
+    "from_parts",
+    "from_recorded",
+    "gate_worktrees",
+    "gates",
+    "harness",
+    "holder",
+    "hook",
+    "husk_report",
+    "is_running",
+    "kind",
+    "latest_run",
+    "ledger",
+    "list_husks",
+    "list_runs",
+    "lock_file",
+    "name",
+    "new",
+    "owner_field",
+    "permits_deletion",
+    "plan_json",
+    "prove_private_half_ownership",
+    "public_dir",
+    "questions",
+    "recording_durability",
+    "report_json",
+    "resolve_run_id",
+    "reviews",
+    "run_dir_names",
+    "run_id",
+    "run_started_sha256",
+    "runs_root",
+    "settings",
+    "target",
+    "transcripts",
+    "v1",
+    "with_private_root",
+]
+
+[[module]]
+path = "src/interaction.rs"
+crate_path = "tactus::interaction"
+funnel = []
+effectful = [
+    "write_question",
+    "write_answer",
+]
+effectful_unnameable = [
+    "ask",
+    "resolve",
+]
+effect_free = [
+    "answer_for_option",
+    "answer_path",
+    "answers_for",
+    "defer_backoff",
+    "fmt",
+    "id",
+    "interactive",
+    "interpret",
+    "is_open",
+    "new",
+    "new_question_id",
+    "notifiers_for",
+    "open",
+    "parse",
+    "read_answer",
+    "render_question",
+    "sleep",
+    "with_poll",
+]
+
+[[module]]
+path = "src/util.rs"
+crate_path = "tactus::util"
+funnel = []
+effectful = [
+    "fsync_dir",
+    "fsync_file",
+    "write_text",
+    "write_json",
+]
+effectful_unnameable = []
+effect_free = [
+    "barriers_performed",
+    "clear",
+    "deserialize",
+    "executable_extensions",
+    "fence_for",
+    "filename_component",
+    "find_program",
+    "find_program_candidates",
+    "find_program_candidates_on_path",
+    "head",
+    "is_recording",
+    "off",
+    "probe_extensions",
+    "read_file_bounded",
+    "record",
+    "recording",
+    "records",
+    "records_for",
+    "rfc3339_utc_now",
+    "serialize",
+    "steps",
+    "tail",
+    "user_tactus_dir",
+]
+
+[[module]]
+path = "src/events/log.rs"
+crate_path = "tactus::events::log"
+funnel = [
+    "append",
+    "append_hooked",
+    "append_topology",
+    "append_topology_hooked",
+    "establish_stable_prefix",
+    "open",
+    "open_hooked",
+    "opened_at",
+    "phase",
+    "point",
+    "site",
+    "site_for",
+]
+effectful = []
+effectful_unnameable = []
+effect_free = [
+    "bytes",
+    "committed_bytes",
+    "first_line_digest",
+    "fmt",
+    "fold",
+    "from",
+    "harness",
+    "into_parts",
+    "kind",
+    "log",
+    "name",
+    "new",
+    "parse_bytes",
+    "path",
+    "poisoned_at",
+    "poisoned_site",
+    "poll",
+    "read_all",
+    "read_bytes",
+    "round_trip",
+    "skip_existing",
+]
+
+[[module]]
+path = "src/runner/host.rs"
+crate_path = "tactus::runner::host"
+funnel = []
+effectful = [
+    "build_command",
+]
+effectful_unnameable = []
+effect_free = [
+    "base",
+    "case",
+    "compose",
+    "contain_write_command",
+    "containment_establishments",
+    "credential_location",
+    "current",
+    "default",
+    "environment",
+    "fmt",
+    "from_process",
+    "new",
+    "policy",
+    "policy_digest",
+    "preflight",
+    "reserved_keys",
+    "reserved_values",
+    "run",
+    "run_shell_probe",
+    "same_key",
+    "shell_probe",
+    "shell_probe_request",
+    "start_write_command",
+    "with_base",
+    "with_environment",
+    "with_hooks",
+]
+
+[[module]]
+path = "src/runner/invocation.rs"
+crate_path = "tactus::runner::invocation"
+funnel = []
+effectful = []
+effectful_unnameable = []
+effect_free = [
+    "attempt",
+    "deserialize",
+    "fmt",
+    "legacy_attempt",
+    "parse",
+    "probe",
+    "probe_target",
+    "render",
+    "sequence",
+    "serialize",
+]
+
+[[module]]
+path = "src/engine/coordinator.rs"
+crate_path = ""
+funnel = []
+effectful = []
+effectful_unnameable = []
+effect_free = []
+
+[[module]]
+path = "src/engine/resume.rs"
+crate_path = ""
+funnel = []
+effectful = []
+effectful_unnameable = []
+effect_free = []
+
+[[module]]
+path = "src/engine/attempt.rs"
+crate_path = ""
+funnel = []
+effectful = []
+effectful_unnameable = []
+effect_free = []
+
+[[module]]
+path = "src/engine/preflight.rs"
+crate_path = ""
+funnel = []
+effectful = []
+effectful_unnameable = []
+effect_free = [
+    "chain_summaries",
+    "confirm_under_lease",
+    "gates_differ",
+    "normalized_plan_bytes",
+    "preflight",
+    "preflight_with_recorded",
+    "repo_relative",
+    "validate_inputs",
+]
+
+[[module]]
+path = "src/workspace.rs"
+crate_path = "tactus::workspace"
+funnel = []
+effectful = [
+    "Workspace::run_git_with_private_hooks",
+    "Workspace::branch_exists",
+    "Workspace::current_branch_ref",
+    "Workspace::parent_sha",
+    "Workspace::prepared_commit_matches",
+    "Workspace::prepared_pin_target",
+    "Workspace::ensure_run_exclusions",
+]
+effectful_unnameable = [
+    "drop",
+]
+effect_free = [
+    "advance_prepared_commit",
+    "capture_candidate",
+    "capture_diff",
+    "commit",
+    "commit_subject",
+    "create_branch",
+    "current_branch",
+    "discard_uncommitted",
+    "ensure_execution_prerequisites",
+    "gate_snapshot",
+    "gate_snapshot_for_candidate",
+    "gate_snapshot_for_candidate_in_store",
+    "gate_snapshot_for_tree",
+    "head_sha",
+    "head_sha_full",
+    "is_clean",
+    "open",
+    "prepare_commit_from_candidate",
+    "reclaim_gate_workspaces",
+    "remove_orphan_prepared_pin",
+    "remove_prepared_pin",
+    "review_input_problem",
+    "review_input_problem_for_tree",
+    "root",
+    "staged_tree_oid",
+    "switch_branch",
+    "uncommitted_summary",
+    "workspace",
+    "worktree_git_dir",
+]
+
+[[module]]
+path = "src/gates.rs"
+crate_path = "tactus::gates"
+funnel = []
+effectful = [
+    "ShellKind::command",
+    "run_all",
+]
+effectful_unnameable = []
+effect_free = [
+    "check",
+    "derive",
+    "diff_adds_tests",
+    "from_record",
+    "name",
+    "native",
+    "parse",
+    "preview_resolution",
+    "program",
+    "resolve_programs",
+    "resolves_via_path",
+    "shell_available",
+    "spec",
+]
+
+[[module]]
+path = "src/review.rs"
+crate_path = "tactus::review"
+funnel = []
+effectful = [
+    "run_review",
+]
+effectful_unnameable = []
+effect_free = [
+    "agents",
+    "complete_diff_error",
+    "default",
+    "describe",
+    "drop_alternative",
+    "fmt",
+    "name",
+    "new",
+    "parse_verdict",
+    "pass_timeout",
+    "passes_for",
+    "plan_for",
+    "profile",
+    "profile_for",
+    "required_agents",
+    "self_review_warning",
+]
+
+[[module]]
+path = "src/agent/proc.rs"
+crate_path = "tactus::agent::proc"
+funnel = []
+effectful = []
+effectful_unnameable = []
+effect_free = [
+    "active_processes_with",
+    "ambient_job_established",
+    "child_in_ambient_job",
+    "child_leads_its_own_group",
+    "deref",
+    "deref_mut",
+    "join_ambient_job",
+    # A pure decision over a memoised `Result`: it clones a message or returns
+    # `Ok`, and touches nothing.
+    "memoised_outcome",
+    "point",
+    # `#[cfg(all(windows, test))]`: writes a value into a process-local
+    # `OnceLock` so a subprocess helper can carry a real ambient failure. No
+    # effect outside this process, and no production caller at all.
+    "poison_ambient_for_tests",
+    "process_alive",
+    "process_creation_time",
+    "run_with_timeout",
+    "run_with_timeout_hooked",
+    "terminate_and_wait",
+    "terminate_and_wait_with",
+]
+
+[[module]]
+path = "src/agent/claude.rs"
+crate_path = "tactus::agent::claude"
+funnel = []
+effectful = []
+effectful_unnameable = []
+effect_free = []
+
+[[module]]
+path = "src/agent/codex.rs"
+crate_path = "tactus::agent::codex"
+funnel = []
+effectful = []
+effectful_unnameable = []
+effect_free = []
+
+[[module]]
+path = "src/agent/copilot.rs"
+crate_path = "tactus::agent::copilot"
+funnel = []
+effectful = []
+effectful_unnameable = []
+effect_free = []
+
+[[module]]
+path = "src/capacity.rs"
+crate_path = "tactus::capacity"
+funnel = []
+effectful = []
+effectful_unnameable = []
+effect_free = [
+    "describe",
+    "discovered",
+    "drain_of",
+    "effective_remaining",
+    "estimate",
+    "fmt",
+    "is_empty",
+    "observe",
+    "parse",
+    "parse_duration",
+    "pool_for",
+    "read_in_v0_1",
+    "render",
+    "render_duration",
+    "report",
+    "strategy_preview",
+]
+
+[[module]]
+path = "src/export.rs"
+crate_path = "tactus::export"
+funnel = []
+effectful = []
+effectful_unnameable = []
+effect_free = [
+    "load",
+    "write",
+]
+
+[[module]]
+path = "src/main.rs"
+crate_path = ""
+funnel = []
+effectful = []
+effectful_unnameable = []
+effect_free = [
+    "establish",
+    "from",
+]
+
+[[module]]
+path = "src/answer.rs"
+crate_path = "tactus::answer"
+funnel = []
+effectful = [
+    "answer",
+]
+effectful_unnameable = []
+effect_free = [
+    "show",
+]
+
+[[module]]
+path = "src/config.rs"
+crate_path = "tactus::config"
+funnel = []
+effectful = []
+effectful_unnameable = []
+effect_free = [
+    "any",
+    "capture",
+    "chain_for",
+    "check_budget",
+    "default_chain",
+    "effort_for",
+    "files",
+    "for_resume",
+    "implementation_effort",
+    "load",
+    "load_captured",
+    "load_captured_with",
+    "load_limits",
+    "load_with",
+    "path",
+    "resolved_effort_policy",
+    "review_effort",
+    "snapshot_file",
+    "text",
+]
+
+[[module]]
+path = "src/connect.rs"
+crate_path = "tactus::connect"
+funnel = []
+effectful = [
+    "run_with",
+]
+effectful_unnameable = []
+effect_free = [
+    "refused",
+    "render_report",
+    "run",
+]
+
+[[module]]
+path = "src/route.rs"
+crate_path = "tactus::route"
+funnel = []
+effectful = []
+effectful_unnameable = []
+effect_free = [
+    "fmt",
+    "resolve",
+]
+
+[[module]]
+path = "src/status.rs"
+crate_path = "tactus::status"
+funnel = []
+effectful = []
+effectful_unnameable = []
+effect_free = [
+    "describe",
+    "follow",
+    "interrupted_run",
+    "load",
+    "render",
+    "report",
+]
+
+[[module]]
+path = "src/validate.rs"
+crate_path = "tactus::validate"
+funnel = []
+effectful = []
+effectful_unnameable = []
+effect_free = [
+    "analyze",
+    "analyze_captured",
+    "builtin_adapter",
+    "capture",
+    "paths",
+    "render",
+    "run",
+    "write_normalized_json",
+]
+
+[[module]]
+path = "src/events/mod.rs"
+crate_path = "tactus::events"
+funnel = []
+effectful = []
+effectful_unnameable = []
+effect_free = [
+    "apply",
+    "ensure_supported_schema",
+    "event",
+    "fmt",
+    "index_of",
+    "interrupted_attempts",
+    "kind",
+    "legacy_unsettled_failure",
+    "new",
+    "normalized_plan_digest",
+    "now",
+    "open_questions",
+    "passed",
+    "recorded_chains",
+    "recorded_complete_reviews",
+    "recorded_effort_policy",
+    "recorded_gates",
+    "recorded_normalized_plan_digest",
+    "recorded_reviews",
+    "replay",
+    "review_cost_incomplete",
+    "review_cost_usd",
+    "review_models",
+    "settle_interrupted",
+    "started_of",
+    "task",
+    "validate_review_identity",
+]
+
+[[module]]
+path = "src/events/log/premove.rs"
+crate_path = ""
+funnel = []
+effectful = []
+effectful_unnameable = [
+    "open",
+    "append",
+]
+effect_free = [
+    "path",
+]
+
+[[module]]
+path = "src/agent/bin.rs"
+crate_path = "tactus::agent::bin"
+funnel = []
+effectful = []
+effectful_unnameable = []
+effect_free = [
+    "display",
+    "extract_version",
+    "locate",
+    "locate_with",
+    "spec",
+]
+
+# Every `libc::` item this tree names, classified.
+#
+# `claim_scope` makes exhaustiveness "the disallowed list is complete for the
+# **primitives the crate uses**", so this list is derived from the tree, not
+# transcribed from the sentence's `fork/kill/setpgid/setsid/flock/fcntl/exec*` --
+# which is six names out of the two dozen effect primitives this crate calls.
+#
+# An item is an EFFECT when calling it changes state outside the calling
+# thread's own memory: the filesystem, the process/signal table, a descriptor,
+# a lock, or a resource limit. Constants (`SIG*`, `O_*`, `F_*`, `LOCK_*`, `E*`),
+# types (`pid_t`, `pollfd`, `sigset_t`) and read-only queries (`getpid`,
+# `sysconf`, `poll`, `read`, `proc_pidinfo`) are not.
+[libc]
+# `setsid` and the `exec*` family are in this list and appear nowhere in the
+# tree: `mechanism` (1) names them regardless ("libc fork/kill/setpgid/setsid/
+# flock/fcntl/exec*"), and a denial of a primitive the crate does not yet call is
+# the cheapest kind there is. `every_platform_conditional_denial_names_something_
+# real` carries them in its PACKET_ONLY set for the same reason.
+effect = [
+    "_exit",
+    "close",
+    "execl",
+    "execle",
+    "execlp",
+    "execv",
+    "execve",
+    "execvp",
+    "fcntl",
+    "flock",
+    "fork",
+    "kill",
+    "mkdtemp",
+    "mkfifo",
+    "open",
+    "pipe",
+    "pipe2",
+    "pthread_sigmask",
+    "raise",
+    "rmdir",
+    "setpgid",
+    "setrlimit",
+    "setsid",
+    "sigaction",
+    "signal",
+    "sigprocmask",
+    "syscall",
+    "unlink",
+    "waitid",
+    "waitpid",
+    "write",
+]
+not_an_effect = [
+    "CLD_DUMPED",
+    "CLD_EXITED",
+    "CLD_KILLED",
+    "EACCES",
+    "EAGAIN",
+    "EBADF",
+    "EINTR",
+    "EINVAL",
+    "EIO",
+    "ENOENT",
+    "EPERM",
+    "ESRCH",
+    "EWOULDBLOCK",
+    "FD_CLOEXEC",
+    "F_GETFD",
+    "F_GETFL",
+    "F_GETLK",
+    "F_SETFL",
+    "F_SETLK",
+    "F_UNLCK",
+    "F_WRLCK",
+    "LOCK_EX",
+    "LOCK_NB",
+    "LOCK_SH",
+    "LOCK_UN",
+    "O_CLOEXEC",
+    "O_DIRECTORY",
+    "O_NONBLOCK",
+    "O_RDONLY",
+    "O_WRONLY",
+    "POLLERR",
+    "POLLHUP",
+    "POLLIN",
+    "POLLNVAL",
+    "PROC_PIDT_SHORTBSDINFO",
+    "P_PID",
+    "RLIMIT_CORE",
+    "SA_RESTART",
+    "SA_SIGINFO",
+    "SEEK_SET",
+    "SIGABRT",
+    "SIGBUS",
+    "SIGCHLD",
+    "SIGCONT",
+    "SIGFPE",
+    "SIGHUP",
+    "SIGILL",
+    "SIGINT",
+    "SIGKILL",
+    "SIGPIPE",
+    "SIGQUIT",
+    "SIGSEGV",
+    "SIGSTOP",
+    "SIGSYS",
+    "SIGTERM",
+    "SIGTRAP",
+    "SIGTSTP",
+    "SIGTTIN",
+    "SIGTTOU",
+    "SIGUSR1",
+    "SIG_BLOCK",
+    "SIG_DFL",
+    "SIG_ERR",
+    "SIG_IGN",
+    "SIG_SETMASK",
+    "SIG_UNBLOCK",
+    "SSTOP",
+    "STDERR_FILENO",
+    "STDIN_FILENO",
+    "STDOUT_FILENO",
+    "SYS_close_range",
+    "SYS_getdents64",
+    "SZOMB",
+    "WEXITED",
+    "WEXITSTATUS",
+    "WIFSTOPPED",
+    "WNOHANG",
+    "WNOWAIT",
+    "WSTOPPED",
+    "WUNTRACED",
+    "_SC_OPEN_MAX",
+    "__errno_location",
+    "__error",
+    "c_int",
+    "c_short",
+    "c_void",
+    "getpgid",
+    "getpgrp",
+    "getpid",
+    "getppid",
+    "id_t",
+    "nanosleep",
+    "pause",
+    "pid_t",
+    "poll",
+    "pollfd",
+    "proc_bsdshortinfo",
+    "proc_listpids",
+    "proc_pidinfo",
+    "read",
+    "rlimit",
+    "sigaddset",
+    "sigemptyset",
+    "sighandler_t",
+    "siginfo_t",
+    "sigismember",
+    "sigpending",
+    "sigset_t",
+    "sleep",
+    "sysconf",
+    "timespec",
+]

@@ -36,6 +36,10 @@
 //! a commit. It goes to an `Unblock` question instead. Nothing here should make
 //! that harder to add — which is why a lens is an enum with behaviour hanging
 //! off it rather than a bool.
+// LEGACY-EFFECT: this module is in the **frozen legacy section** of
+// `effects/allowlist.toml`, which carries its justification and the condition
+// under which the section shrinks. `decisions.effect_site_inventory.mechanism` (2).
+#![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -44,12 +48,14 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::agent::{AgentAdapter, TaskRun, proc};
+use crate::agent::{AgentAdapter, TaskRun};
 use crate::catalog::{self, Family};
 use crate::config::Config;
 use crate::error::TactusError;
 use crate::ir::{Effort, OutcomeStatus, PermissionMode, Plan, Task, Tier, Verdict, WorkerProfile};
 use crate::route::ResolvedChain;
+use crate::runner::invocation::InvocationId;
+use crate::runner::{AgentId, Runner};
 use crate::util;
 
 /// Largest complete diff one review pass accepts. Silently omitting files is
@@ -494,6 +500,25 @@ pub struct ReviewCx<'a> {
     pub timeout: Duration,
 }
 
+/// The two identities one review pass can spend.
+///
+/// Two, because the packet's role set has two members for a review —
+/// `decisions.admission_and_leases.permits.invocation_identity`: "role in
+/// {worker, gate(n), **review_pass(n)**, **review_reask(n)**}". A pass that
+/// answers unparseably earns exactly one re-ask, and that re-ask is a second
+/// process with its own identity rather than a second run of the first.
+///
+/// Built by the caller rather than here, because which *form* they take is the
+/// caller's: a task's review is the attempt form and an integration
+/// transaction's is the sequence form (which has no worker).
+#[derive(Debug, Clone)]
+pub struct ReviewInvocations {
+    /// The verdict.
+    pub pass: InvocationId,
+    /// The one format-only re-ask, if the verdict could not be parsed.
+    pub reask: InvocationId,
+}
+
 /// What a review attempt produced. A reviewer that could not run at all is
 /// NOT a rejection of the change: the engine has to tell "the code is wrong"
 /// apart from "the judge was unavailable", or a rate-limited pool reads as a
@@ -568,7 +593,19 @@ fn unavailable_after_error(
     }
 }
 
-pub fn run_review(cx: &ReviewCx<'_>) -> Result<ReviewOutcome, TactusError> {
+/// Run one review pass through `runner`.
+///
+/// # Errors
+///
+/// Only what makes the *evidence* unusable — an oversized or opaque diff. A
+/// reviewer that could not run is [`ReviewResult::Unavailable`], not an error:
+/// the engine has to tell "the code is wrong" from "the judge was
+/// unavailable".
+pub fn run_review(
+    cx: &ReviewCx<'_>,
+    runner: &dyn Runner,
+    invocations: &ReviewInvocations,
+) -> Result<ReviewOutcome, TactusError> {
     // Validate the complete evidence before permission files are written or an
     // adapter can build/spawn a model command. An incomplete review is no
     // review, so large tasks fail closed rather than losing early paths.
@@ -648,19 +685,39 @@ pub fn run_review(cx: &ReviewCx<'_>) -> Result<ReviewOutcome, TactusError> {
                 transcript: last_path,
             });
         }
-        let output =
-            match proc::run_with_timeout(command, cx.adapter.stdin_payload(&task_run), remaining) {
-                Ok(output) => output,
-                Err(error) => {
-                    return Ok(unavailable_after_error(
-                        "review process failed",
-                        error,
-                        cost,
-                        invocation - 1,
-                        last_path,
-                    ));
-                }
-            };
+        // A reviewer is an agent CLI, so it is slotted and `host-v1` gives it
+        // its agent's credential location (`ExecutionRole::Review`). The
+        // workspace is the read-only candidate snapshot the caller resolved,
+        // and it is the runner that puts the process there — the adapter no
+        // longer can.
+        //
+        // The prompt still arrives the way the adapter says: `stdin_payload`
+        // is delivery policy (a CLI that takes the prompt as an argument
+        // returns nothing here), and the spec is what carries those bytes to
+        // the child.
+        let request = crate::runner::review_request(
+            command.stdin(cx.adapter.stdin_payload(&task_run).as_bytes().to_vec()),
+            task_run.workspace.clone(),
+            AgentId::new(cx.adapter.id()),
+            remaining,
+            if invocation == 1 {
+                invocations.pass.clone()
+            } else {
+                invocations.reask.clone()
+            },
+        );
+        let output = match runner.run(&request) {
+            Ok(output) => output,
+            Err(error) => {
+                return Ok(unavailable_after_error(
+                    "review process failed",
+                    error,
+                    cost,
+                    invocation - 1,
+                    last_path,
+                ));
+            }
+        };
 
         last_path = if invocation == 1 {
             transcript.clone()
@@ -972,6 +1029,38 @@ fn string_list(value: Option<&Value>) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::ir::{TaskId, TaskKind};
+    use crate::runner::host::HostRunner;
+    use crate::runner::invocation::AttemptRole;
+    use crate::runner::{ExecutionRole, RunnerRequest};
+    use crate::topology::events::AttemptNumber;
+    use crate::topology::registry::TaskKey;
+
+    /// The boundary these tests run on: the real host one, because a review
+    /// test that mocked the runner would stop proving that a review is a
+    /// process.
+    fn host() -> HostRunner {
+        HostRunner::new()
+    }
+
+    /// One review pass's two identities, in the legacy engine's own scope —
+    /// task 0, attempt 1, pass 0. Written here rather than taken from a
+    /// generator so the test names what it is asserting about.
+    fn review_ids() -> ReviewInvocations {
+        ReviewInvocations {
+            pass: InvocationId::legacy_attempt(
+                TaskKey(0),
+                AttemptNumber(1),
+                AttemptRole::ReviewPass(0),
+                0,
+            ),
+            reask: InvocationId::legacy_attempt(
+                TaskKey(0),
+                AttemptNumber(1),
+                AttemptRole::ReviewReask(0),
+                0,
+            ),
+        }
+    }
 
     /// Any adapter contact is a test failure. Used to prove evidence-size
     /// refusal happens before permission materialization, command build, or
@@ -983,11 +1072,11 @@ mod tests {
             "never-invoked"
         }
 
-        fn probe(&self) -> Result<crate::agent::Caps, TactusError> {
+        fn probe(&self, _runner: &dyn Runner) -> Result<crate::agent::Caps, TactusError> {
             panic!("oversized review must refuse before probing")
         }
 
-        fn build(&self, _run: &TaskRun) -> Result<std::process::Command, TactusError> {
+        fn build(&self, _run: &TaskRun) -> Result<crate::runner::CommandSpec, TactusError> {
             panic!("oversized review must refuse before command build")
         }
 
@@ -1026,30 +1115,34 @@ mod tests {
             "deadline-test"
         }
 
-        fn probe(&self) -> Result<crate::agent::Caps, TactusError> {
+        fn probe(&self, _runner: &dyn Runner) -> Result<crate::agent::Caps, TactusError> {
             panic!("direct review test does not probe")
         }
 
-        fn build(&self, _run: &TaskRun) -> Result<std::process::Command, TactusError> {
+        fn build(&self, _run: &TaskRun) -> Result<crate::runner::CommandSpec, TactusError> {
             use std::sync::atomic::Ordering;
 
             let invocation = self.builds.fetch_add(1, Ordering::SeqCst);
+            // 0.4 and 0.75 of `verdict_reask_uses_the_remaining_pass_deadline`'s
+            // 3s budget. The ratios are what the test is about and they are
+            // unchanged; only the absolute scale moved, and it moved because
+            // 0.4 of *one* second left 599ms for a process spawn. See that
+            // test for the measurement.
             let (marker, delay_ms) = if invocation == 0 {
-                ("first-unparseable", "400")
+                ("first-unparseable", "1200")
             } else {
-                ("second-valid", "750")
+                ("second-valid", "2250")
             };
-            let mut command = std::process::Command::new(
-                std::env::current_exe().expect("current test executable"),
-            );
-            command.args([
-                "--exact",
-                "review::tests::review_deadline_helper",
-                "--nocapture",
-            ]);
-            command.env("TACTUS_REVIEW_DEADLINE_HELPER", marker);
-            command.env("TACTUS_REVIEW_DEADLINE_MS", delay_ms);
-            Ok(command)
+            Ok(crate::runner::CommandSpec::new(
+                std::env::current_exe()
+                    .expect("current test executable")
+                    .to_string_lossy(),
+            )
+            .arg("--exact")
+            .arg("review::tests::review_deadline_helper")
+            .arg("--nocapture")
+            .env("TACTUS_REVIEW_DEADLINE_HELPER", marker)
+            .env("TACTUS_REVIEW_DEADLINE_MS", delay_ms))
         }
 
         fn parse(
@@ -1099,29 +1192,28 @@ mod tests {
             "unavailable-test"
         }
 
-        fn probe(&self) -> Result<crate::agent::Caps, TactusError> {
+        fn probe(&self, _runner: &dyn Runner) -> Result<crate::agent::Caps, TactusError> {
             panic!("direct review test does not probe")
         }
 
-        fn build(&self, run: &TaskRun) -> Result<std::process::Command, TactusError> {
+        fn build(&self, run: &TaskRun) -> Result<crate::runner::CommandSpec, TactusError> {
             match self.stage {
                 UnavailableStage::Build => Err(TactusError::Agent {
                     message: "scripted review build failure".to_owned(),
                 }),
-                UnavailableStage::Spawn => Ok(std::process::Command::new(
-                    run.workspace.join("missing-reviewer-executable"),
+                UnavailableStage::Spawn => Ok(crate::runner::CommandSpec::new(
+                    run.workspace
+                        .join("missing-reviewer-executable")
+                        .to_string_lossy(),
                 )),
-                UnavailableStage::Transcript => {
-                    let mut command = std::process::Command::new(
-                        std::env::current_exe().expect("current test executable"),
-                    );
-                    command.args([
-                        "--exact",
-                        "review::tests::review_deadline_helper",
-                        "--nocapture",
-                    ]);
-                    Ok(command)
-                }
+                UnavailableStage::Transcript => Ok(crate::runner::CommandSpec::new(
+                    std::env::current_exe()
+                        .expect("current test executable")
+                        .to_string_lossy(),
+                )
+                .arg("--exact")
+                .arg("review::tests::review_deadline_helper")
+                .arg("--nocapture")),
                 UnavailableStage::Permissions => {
                     panic!("permission failure must stop before command build")
                 }
@@ -1242,7 +1334,8 @@ mod tests {
                 timeout: Duration::from_secs(60),
             };
 
-            let outcome = run_review(&cx).expect("infrastructure failure is a review outcome");
+            let outcome = run_review(&cx, &host(), &review_ids())
+                .expect("infrastructure failure is a review outcome");
             if matches!(stage, UnavailableStage::Transcript) {
                 assert_eq!(outcome.invocations, 1, "the reviewer already completed");
                 assert_eq!(outcome.cost_usd, Some(0.25), "reported spend is retained");
@@ -1568,7 +1661,8 @@ mod tests {
             stem: "00-t1-1".to_owned(),
             timeout: Duration::from_secs(60),
         };
-        let error = run_review(&cx).expect_err("oversized review must fail closed");
+        let error =
+            run_review(&cx, &host(), &review_ids()).expect_err("oversized review must fail closed");
         let message = error.to_string();
         assert!(message.contains("complete-review limit"), "{message}");
         assert!(message.contains("smaller complete diff"), "{message}");
@@ -1594,7 +1688,8 @@ mod tests {
             stem: "00-t1-opaque".to_owned(),
             timeout: Duration::from_secs(60),
         };
-        let error = run_review(&cx).expect_err("opaque review must fail closed");
+        let error =
+            run_review(&cx, &host(), &review_ids()).expect_err("opaque review must fail closed");
         assert!(error.to_string().contains("opaque binary"), "{error}");
     }
 
@@ -1618,8 +1713,81 @@ mod tests {
             stem: "00-t1-gitlink".to_owned(),
             timeout: Duration::from_secs(60),
         };
-        let error = run_review(&cx).expect_err("a gitlink hash is not reviewable content");
+        let error = run_review(&cx, &host(), &review_ids())
+            .expect_err("a gitlink hash is not reviewable content");
         assert!(error.to_string().contains("gitlink"), "{error}");
+    }
+
+    /// A runner that writes down which identity each review process carried.
+    struct RecordingRunner {
+        inner: HostRunner,
+        seen: std::sync::Mutex<Vec<(ExecutionRole, String)>>,
+    }
+
+    impl Runner for RecordingRunner {
+        fn run(&self, request: &RunnerRequest) -> Result<crate::agent::ProcessOutput, TactusError> {
+            self.seen
+                .lock()
+                .expect("recorder")
+                .push((request.role.clone(), request.invocation.render()));
+            Runner::run(&self.inner, request)
+        }
+    }
+
+    /// The re-ask is a second process with the packet's *other* review role.
+    ///
+    /// `decisions.admission_and_leases.permits.invocation_identity` gives a
+    /// review two role members — "{worker, gate(n), **review_pass(n)**,
+    /// **review_reask(n)**}" — so the one format-only re-ask a pass is allowed
+    /// carries `review_reask(n)`, not a second run of `review_pass(n)`. The
+    /// expected values are written from that sentence.
+    #[test]
+    fn the_one_format_reask_is_its_own_invocation_not_a_second_run_of_the_first() {
+        let root = std::env::temp_dir().join(format!(
+            "tactus-review-reask-identity-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("review scratch");
+        let task = task();
+        let adapter = DeadlineAdapter::new();
+        let cx = ReviewCx {
+            adapter: &adapter,
+            profile: profile_for("deadline-test", "test-model", "review", Effort::High),
+            lens: Lens::Acceptance,
+            task: &task,
+            diff: "diff --git a/a.rs b/a.rs\n+++ b/a.rs\n+fn x() {}\n",
+            artifacts: &[],
+            decisions: &[],
+            workspace: Path::new("."),
+            settings_dir: &root,
+            reviews_dir: &root,
+            stem: "reask-identity".to_owned(),
+            // Generous, so the pass really performs both invocations rather
+            // than running out of clock the way the deadline test wants it to.
+            timeout: Duration::from_secs(30),
+        };
+        let runner = RecordingRunner {
+            inner: HostRunner::new(),
+            seen: std::sync::Mutex::new(Vec::new()),
+        };
+
+        let outcome = run_review(&cx, &runner, &review_ids()).expect("review result");
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(outcome.invocations, 2, "the format re-ask was attempted");
+
+        let seen = runner.seen.lock().expect("recorder").clone();
+        assert_eq!(
+            seen,
+            vec![
+                (ExecutionRole::Review, "k0.g0.a1.review_pass0.o0".to_owned()),
+                (
+                    ExecutionRole::Review,
+                    "k0.g0.a1.review_reask0.o0".to_owned()
+                ),
+            ],
+            "the verdict and its one re-ask are two processes with two \
+             identities, and both are review-role processes"
+        );
     }
 
     #[test]
@@ -1641,10 +1809,27 @@ mod tests {
             settings_dir: &root,
             reviews_dir: &root,
             stem: "deadline".to_owned(),
-            timeout: Duration::from_millis(1000),
+            // Three seconds, not one, and the two child delays scale with it
+            // (1200ms and 2250ms — the same 0.4 and 0.75 of the budget).
+            //
+            // The property under test is a ratio: the first invocation fits,
+            // and the re-ask does *not* fit in what the first one left. At one
+            // second that held with 599ms of slack for a process spawn —
+            // measured on an idle box, invocation 1 takes 401ms of the 1000ms
+            // — and a saturated machine eats 599ms spawning a test binary
+            // easily. When it does, the first invocation exhausts the whole
+            // budget, `run_review` returns before invocation 2, and this test
+            // fails with `invocations: 1` while asserting exactly the right
+            // thing. Observed twice under load and 41 times green idle.
+            //
+            // Scaling the clock is not weakening the assertion: the same
+            // re-ask still must not fit. Witnessed by mutation — giving the
+            // re-ask `cx.timeout` instead of the remaining budget still fails
+            // this test at the 3s scale, exactly as it did at 1s.
+            timeout: Duration::from_millis(3000),
         };
 
-        let outcome = run_review(&cx).expect("review result");
+        let outcome = run_review(&cx, &host(), &review_ids()).expect("review result");
         let _ = std::fs::remove_dir_all(&root);
         assert_eq!(outcome.invocations, 2, "the format re-ask was attempted");
         assert!(
@@ -1655,7 +1840,8 @@ mod tests {
                     ..
                 }
             ),
-            "a fresh one-second clock would let the 750ms re-ask pass; the shared deadline must not"
+            "a fresh three-second clock would let the 2250ms re-ask pass; the shared deadline \
+             must not"
         );
     }
 

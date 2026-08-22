@@ -41,6 +41,16 @@ jobs:
         uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
           toolchain: stable
+          # `clippy` is a TEST dependency here, not only a lint one. PR5's
+          # `expected_failures_refusals[6]` is "a disallowed primitive or
+          # effectful wrapper outside an allowlisted module fails clippy", and
+          # `effects::tests::every_declared_effect_denial_refuses_for_the_reason_
+          # it_declares` discharges it by compiling one fixture per resolution
+          # shape with `clippy-driver`. `dtolnay/rust-toolchain` installs the
+          # minimal profile, so without this the fixtures could not run in the
+          # job that runs the tests — which is `PR5-C-DOCTEST-FIXTURES-NEVER-RAN`
+          # one step removed.
+          components: clippy
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -69,6 +79,31 @@ jobs:
           toolchain: 1.85.0
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo check --locked --all-targets --all-features
+
+  # The effect denylist is rustc-resolved, so it only denies what the compiler
+  # actually compiles — and `lint` below is `ubuntu-latest`, which never compiles
+  # a `#[cfg(windows)]` body at all. Measured (`PR5-CONF-014`): a raw
+  # `std::fs::write` in a non-allowlisted module passes Ubuntu clippy, the test
+  # job on all three platforms and the msrv job on all three platforms when it is
+  # placed under `#[cfg(windows)]`, and is refused with the `TACTUS-EFFECT R21/R18`
+  # note by MSVC clippy. So without this job `expected_failures_refusals[5]` and
+  # `[6]` are undischarged for the Windows half of the tree.
+  #
+  # A separate job rather than a step in `test`, deliberately: `test
+  # (windows-latest)` is the attestation of record for the Windows suite and a
+  # lint failure must not be able to masquerade as a test failure in it.
+  lint-windows:
+    name: lint (windows)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        with:
+          toolchain: stable
+          components: clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo clippy --all-targets --all-features -- -D warnings
 
   lint:
     name: lint
@@ -99,7 +134,7 @@ jobs:
   merge-gate:
     name: tactus-ci
     if: always()
-    needs: [lint, msrv, test]
+    needs: [lint, lint-windows, msrv, test]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -107,11 +142,12 @@ jobs:
         shell: bash
         env:
           LINT_RESULT: ${{ needs.lint.result }}
+          LINT_WINDOWS_RESULT: ${{ needs.lint-windows.result }}
           MSRV_RESULT: ${{ needs.msrv.result }}
           TEST_RESULT: ${{ needs.test.result }}
         run: |
           failed=0
-          for gate in LINT MSRV TEST; do
+          for gate in LINT LINT_WINDOWS MSRV TEST; do
             result_var="${gate}_RESULT"
             result="${!result_var}"
             if [[ "$result" != "success" ]]; then

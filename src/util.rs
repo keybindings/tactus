@@ -1,6 +1,10 @@
 //! Small shared helpers used across the engine, gates, adapters, and
 //! reporting: text truncation, filename sanitizing, PATH program resolution,
 //! run-artifact writes, and event timestamps.
+// Allowlist placement: the **funnel section** of `effects/allowlist.toml`, which
+// carries this module's review clause -- effects only inside site-taking APIs,
+// no writable handle returned. `decisions.effect_site_inventory.mechanism` (2).
+#![allow(clippy::disallowed_methods)]
 
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -200,11 +204,352 @@ pub(crate) fn find_program_candidates_on_path(
     found
 }
 
+/// One durability primitive, as a funnel actually performed it.
+///
+/// The Event lane has had a ledger of these since PR5 opened
+/// (`events::log::SyncRecord`), and `proof_tests[9]` names it — "**the sync
+/// ledger** shows the synced length equal to the file length after open". The
+/// workspace and run-directory lanes had nothing of the kind, and a measured
+/// consequence: deleting the intent file's `fsync`, deleting the containing
+/// directory's `fsync`, and deleting the staged file's `fsync` from every
+/// atomic publication in `rundir` were each invisible to the whole suite
+/// (`PR5-WORKSPACE-015`, `PR5-WORKSPACE-016`, `PR5-RUNDIR-057`). They have to
+/// be: on a machine that does not lose power mid-test, an unsynced file is
+/// byte-for-byte a synced one, and outcomes are all those lanes could check.
+///
+/// The rename is in the ledger beside the two syncs because the claims are
+/// *orderings* — `run_creation` says "write `<name>.tmp`, **fsync**, rename,
+/// **fsync the directory**" — and an ordering is not expressible over a trace
+/// that holds only one of the three things being ordered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DurableStep {
+    /// A `write_all` of `len` bytes was performed.
+    Wrote,
+    /// A `flush` was performed.
+    Flushed,
+    /// A `sync_data` was performed — the append's own durability barrier, as
+    /// distinct from [`Self::SyncedFile`]'s `sync_all`.
+    SyncedData,
+    /// A file was truncated to `len` bytes.
+    Truncated,
+    /// A staged file's own bytes were made durable (`fsync` / `FlushFileBuffers`).
+    SyncedFile,
+    /// A staged file was renamed onto its published name.
+    Renamed,
+    /// A directory entry was made durable. Unix only: `sync_dir` is a
+    /// documented no-op on Windows, so a Windows trace has the file syncs and
+    /// the renames and no directory syncs, and a reader of the evidence can
+    /// see which platform produced it.
+    SyncedDirectory,
+}
+
+/// One entry in a [`DurabilityLedger`].
+///
+/// **One entry per attempt**, in order, whether or not the primitive returned
+/// `Ok`. "Exactly one primitive attempt and one error" is a claim the packet
+/// makes about an entered append (`invariants[1]`), and a ledger that recorded
+/// only successes could not distinguish one attempt from a retry that failed
+/// twice.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DurableRecord {
+    /// What was done.
+    pub step: DurableStep,
+    /// What it was done to.
+    pub path: PathBuf,
+    /// How much of it. For a sync or a truncation this is the **filesystem's
+    /// own answer** rather than a number the funnel carried along — a ledger
+    /// that reported its own idea of the length could agree with itself while
+    /// the file said something else. For [`DurableStep::Wrote`] it is the
+    /// number of bytes handed to `write_all`, which is the quantity the claim
+    /// "one `write_all` containing both the JSON and its LF commit marker" is
+    /// about. Zero when the path has no length to report.
+    pub len: u64,
+}
+
+/// An ordered record of the durability primitives a funnel performed.
+///
+/// Cloning shares the log, so a caller can hand a clone into a funnel body and
+/// still read what the body recorded. Production never constructs a recording
+/// one: [`Self::off`] holds no allocation and every `record` call on it is a
+/// discriminant test.
+#[derive(Debug, Clone, Default)]
+pub struct DurabilityLedger(Option<std::sync::Arc<std::sync::Mutex<Vec<DurableRecord>>>>);
+
+impl DurabilityLedger {
+    /// A ledger that records nothing. What production passes.
+    #[must_use]
+    pub fn off() -> Self {
+        Self(None)
+    }
+
+    /// A ledger that records. What a test passes.
+    #[must_use]
+    pub fn recording() -> Self {
+        Self(Some(std::sync::Arc::new(std::sync::Mutex::new(Vec::new()))))
+    }
+
+    /// Whether this ledger records at all.
+    #[must_use]
+    pub fn is_recording(&self) -> bool {
+        self.0.is_some()
+    }
+
+    /// Append one entry.
+    pub fn record(&self, step: DurableStep, path: &Path, len: u64) {
+        if let Some(log) = &self.0 {
+            log.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(DurableRecord {
+                    step,
+                    path: path.to_path_buf(),
+                    len,
+                });
+        }
+    }
+
+    /// Everything recorded so far, in order.
+    #[must_use]
+    pub fn records(&self) -> Vec<DurableRecord> {
+        self.0.as_ref().map_or_else(Vec::new, |log| {
+            log.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        })
+    }
+
+    /// Everything recorded so far about `path`, in order.
+    #[must_use]
+    pub fn records_for(&self, path: &Path) -> Vec<DurableRecord> {
+        self.records()
+            .into_iter()
+            .filter(|record| record.path == path)
+            .collect()
+    }
+
+    /// The steps recorded so far, in order, with their paths discarded.
+    #[must_use]
+    pub fn steps(&self) -> Vec<DurableStep> {
+        self.records()
+            .into_iter()
+            .map(|record| record.step)
+            .collect()
+    }
+
+    /// Forget everything recorded so far, so a later sequence can be read on
+    /// its own rather than as a suffix of a cumulative log.
+    ///
+    /// The cumulative-log trap is not hypothetical here: an ordering assertion
+    /// over the *first* match in a log that already held an earlier, unrelated
+    /// occurrence is exactly how `PR5-WORKSPACE-022` survived.
+    pub fn clear(&self) {
+        if let Some(log) = &self.0 {
+            log.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clear();
+        }
+    }
+}
+
+/// Every byte of `path`, up to the length the file itself declares.
+///
+/// This is [`std::fs::read`] with the one property `std::fs::read` does not
+/// have: **it terminates**. `read_to_end` loops until a read returns zero, and
+/// an endless source — `/dev/zero`, `/dev/full`, a character device someone
+/// symlinked a log to — never returns zero, so `std::fs::read` on one never
+/// returns and grows memory until it is killed. Every caller here is reading a
+/// file *inside a run directory*, which a startup census must classify before a
+/// write command may proceed (`decisions.sequential_substrate.startup_census`),
+/// so "never returns" is a coordinator that holds the worktree lock for ever.
+///
+/// The bound is the file's **own** length, from `fstat` on the already-open
+/// handle rather than from the path, so it cannot be raced by a swap between
+/// the two calls and cannot be talked out of by an argument. It is not a cap:
+/// a regular file is read in full however large it is, so nothing a caller
+/// might need is hidden — the read is bounded, not the answer. A source with no
+/// length (a device, a fifo, a socket) reports zero and contributes nothing,
+/// which every caller here already treats as "no content", the safe direction.
+///
+/// What it does **not** defend: `File::open` on a fifo with no writer blocks in
+/// the kernel before this function sees a handle. That is `std::fs::read`'s
+/// behaviour too and is unchanged here; a run directory holds regular files.
+///
+/// # Errors
+///
+/// [`std::io::Error`] from `open`, `fstat` or `read`, verbatim, so a caller can
+/// still distinguish `NotFound` from a real failure.
+pub fn read_file_bounded(path: &Path) -> std::io::Result<Vec<u8>> {
+    use std::io::Read as _;
+    let mut file = std::fs::File::open(path)?;
+    let bound = file.metadata()?.len();
+    let mut bytes = Vec::new();
+    file.by_ref().take(bound).read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
 pub fn write_text(path: &Path, content: &str) -> Result<(), TactusError> {
     std::fs::write(path, content).map_err(|source| TactusError::Io {
         path: path.to_path_buf(),
         source,
     })
+}
+
+/// How many durability barriers this process has performed.
+///
+/// Test-only, and the reason it exists is `PR5-CONF-012`: the durability ledger
+/// is written by the function it certifies. `let outcome = file.sync_all();` →
+/// `let outcome: io::Result<()> = Ok(());` survived the whole suite, because the
+/// ledger entry is written *beside* the syscall and every trace assertion reads
+/// the entry. A counter here cannot see inside `sync_all` either — nothing on a
+/// machine that does not lose power can — but it can see whether the barrier was
+/// **reached**, which is the half the ledger was standing in for. The other half
+/// is a source census: [`crate::effects`]'s
+/// `every_file_durability_barrier_in_a_funnel_module_goes_through_one_call`
+/// pins that the syscall is inside these two functions and nowhere else, so
+/// deleting it is a failure rather than a silent no-op.
+///
+/// Unconditional rather than `#[cfg(test)]`, for two reasons. A relaxed
+/// increment beside an `fsync` is not measurable — the syscall is six orders of
+/// magnitude more expensive — and a `#[cfg(test)]` item in the middle of this
+/// file would truncate the **production region** every source census in
+/// `src/effects/tests.rs` computes, which cuts at the first `#[cfg(test)]`. That
+/// is a census reading half a module and reporting clean, which is the exact
+/// failure this project has a reconciliation table for.
+static BARRIERS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How many times [`fsync_file`] or [`fsync_dir`] has been entered.
+///
+/// Only a test reads it — production performs barriers, it does not count them —
+/// so the non-test build is told, in the same idiom `src/agent/proc.rs:155`
+/// already uses for its per-platform dead code. The *counter* stays
+/// unconditional; see [`BARRIERS`] for why a `#[cfg(test)]` item here would
+/// truncate every source census's production region.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn barriers_performed() -> u64 {
+    BARRIERS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+fn count_barrier() {
+    BARRIERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The **file** half of the durability barrier (`PR5-CONF-012`).
+///
+/// One call, shared by every funnel that stages a file before publishing it, so
+/// that "the durability step is still here" is a property a source census can
+/// check rather than a line each caller is trusted to keep.
+///
+/// # Errors
+///
+/// [`std::io::Error`] from `fsync`, verbatim.
+pub(crate) fn fsync_file(file: &std::fs::File) -> std::io::Result<()> {
+    count_barrier();
+    file.sync_all()
+}
+
+/// The **directory** half of the durability barrier, on every platform this
+/// ships on (`PR5-CONF-013`).
+///
+/// A rename is not durable because the renamed file was synced: the durable
+/// thing is the *directory entry*, and it needs its own barrier.
+/// `run_creation` says "write `<name>.tmp`, fsync, rename, **fsync the
+/// directory**"; `scope` requires `Event.OpenLog`'s "directory fsync" and "file
+/// **and directory** after a truncation". Neither carries a platform exception
+/// and Windows is a first-class target (DESIGN.md §1), so the three call sites
+/// used to return `Ok(())` without opening anything on non-unix and the suite
+/// pinned that omission in both directions on purpose.
+///
+/// **Why this is not `File::open(dir)?.sync_all()` everywhere.** Measured on a
+/// Windows Server 2025 guest: std's open refuses a directory outright —
+/// `Os { code: 5, kind: PermissionDenied, message: "Access is denied." }`, 14
+/// tests down — because it does not pass `FILE_FLAG_BACKUP_SEMANTICS`, which is
+/// the flag that makes `CreateFileW` return a *directory* handle at all. So the
+/// documented boundary was a platform fact rather than a preference, and the
+/// way through it is the Win32 call std does not expose.
+///
+/// # Errors
+///
+/// [`std::io::Error`] from the open or from the flush, verbatim, so a caller can
+/// still tell a missing directory from a refused barrier.
+pub(crate) fn fsync_dir(dir: &Path) -> std::io::Result<()> {
+    count_barrier();
+    #[cfg(unix)]
+    {
+        std::fs::File::open(dir)?.sync_all()
+    }
+    #[cfg(windows)]
+    {
+        windows_fsync_dir(dir, WINDOWS_DIRECTORY_ACCESS)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = dir;
+        Ok(())
+    }
+}
+
+/// The access mask [`fsync_dir`] opens a directory with on Windows.
+///
+/// `FlushFileBuffers` documents that the handle must carry **write** access, and
+/// a directory grants `GENERIC_WRITE` as "may add a file or a subdirectory" —
+/// it is not a request to write the directory's bytes, which no caller can do.
+/// Named rather than inlined so that
+/// [`the_directory_barrier_needs_exactly_the_access_it_asks_for`] can drive the
+/// same code path with a mask that is *not* enough and show which half refuses.
+#[cfg(windows)]
+const WINDOWS_DIRECTORY_ACCESS: u32 =
+    windows_sys::Win32::Foundation::GENERIC_READ | windows_sys::Win32::Foundation::GENERIC_WRITE;
+
+/// [`fsync_dir`]'s Windows body, over any access mask.
+#[cfg(windows)]
+fn windows_fsync_dir(dir: &Path, access: u32) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt as _;
+
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, FlushFileBuffers, OPEN_EXISTING,
+    };
+
+    // `CreateFileW` takes a NUL-terminated UTF-16 string, and an interior NUL
+    // would silently truncate the path — so it is refused rather than trimmed.
+    let mut wide: Vec<u16> = dir.as_os_str().encode_wide().collect();
+    if wide.contains(&0) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "a directory path with an interior NUL cannot be opened",
+        ));
+    }
+    wide.push(0);
+
+    // Shared for read, write and delete: this handle exists for one flush and
+    // must not be able to stop a concurrent command from using the directory.
+    // SAFETY: `wide` is a live NUL-terminated UTF-16 path that outlives the
+    // call, and the two pointer arguments are the documented "no security
+    // attributes" and "no template" nulls.
+    let handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            access,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: `handle` is a live directory handle this function owns.
+    let flushed = unsafe { FlushFileBuffers(handle) };
+    let outcome = if flushed == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    };
+    // SAFETY: same handle, closed exactly once, and not used afterwards.
+    let _ = unsafe { CloseHandle(handle) };
+    outcome
 }
 
 pub fn write_json<T: serde::Serialize>(path: &Path, value: &T) -> Result<(), TactusError> {
@@ -286,6 +631,53 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
         shifted_month - 9
     };
     (year + i64::from(month <= 2), month, day)
+}
+
+/// Whether `left` and `right` name the same directory or file on disk.
+///
+/// Test-only, and shared rather than local because the defect it removes is a
+/// class rather than a site. `PathBuf == PathBuf` is a comparison of two
+/// strings, and a test that asserts one against a path production derived is
+/// asserting that two independent spellings of one directory came out
+/// identical. Three environment facts break that, and a Linux CI cell has none
+/// of them:
+///
+/// * macOS symlinks `/var` to `/private/var`, so anything canonicalised
+///   disagrees textually with the `std::env::temp_dir()` path it came from;
+/// * Windows hands back the 8.3 short name of a directory whose real name is
+///   long (`C:\Users\RUNNER~1\…` for `runneradmin`), and which spelling you get
+///   depends on whose user name is long — the CI runner's is, so CI saw it and
+///   a short-named developer box never can;
+/// * the same Windows path arrives with `/` from git and `\` from the OS.
+///
+/// [`std::fs::canonicalize`] is the normalisation because its contract is
+/// exactly the property wanted: "the canonical, absolute form of the path with
+/// all intermediate components normalized and symbolic links resolved". Two
+/// names for one existing directory therefore canonicalise to one string on
+/// every platform std supports, which makes this comparison mean "the same
+/// directory" on all of them rather than "the same spelling" on one of them.
+///
+/// A path that does not resolve is not the same object as one that does, so
+/// exactly one failure answers `false` — which keeps the negative form
+/// (`!same_path(…)`) honest for a workspace the run has already cleaned up.
+///
+/// # Panics
+///
+/// When *neither* side resolves. Nothing can be concluded from comparing two
+/// absent paths, and answering `false` there would be the same silent pass
+/// this helper exists to remove.
+#[cfg(test)]
+pub(crate) fn same_path(left: &Path, right: &Path) -> bool {
+    match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        (Ok(_), Err(_)) | (Err(_), Ok(_)) => false,
+        (Err(left_error), Err(right_error)) => panic!(
+            "neither `{}` ({left_error}) nor `{}` ({right_error}) resolves, so no comparison \
+             of the two says anything",
+            left.display(),
+            right.display()
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -401,5 +793,118 @@ mod tests {
         );
         // find_program must not consult any directory-less candidate.
         assert!(find_program("bait.txt").is_none());
+    }
+
+    /// Two spellings of one directory are one directory, and two directories
+    /// are not.
+    ///
+    /// The fixture is `.` and `..` rather than a symlink because those are the
+    /// one pair of "different string, same directory" that every platform
+    /// std supports normalises identically — Windows has no unprivileged
+    /// directory symlink, and the macOS `/var` case and the Windows 8.3 case
+    /// this helper exists for cannot be built on demand anywhere else. It is
+    /// the same mechanism either way: `canonicalize` resolves the path to the
+    /// object, and the object is what the assertion means.
+    #[test]
+    fn same_path_compares_directories_rather_than_spellings() {
+        let root = std::env::temp_dir().join(format!("tactus-util-same-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let inner = root.join("inner");
+        std::fs::create_dir_all(&inner).expect("scratch directories");
+
+        let detour = inner.join("..").join("inner").join(".");
+        assert_ne!(detour, inner, "the fixture must differ as a string");
+        assert!(same_path(&detour, &inner), "…and agree as a directory");
+
+        assert!(!same_path(&root, &inner), "a parent is not its child");
+        assert!(
+            !same_path(&root.join("absent"), &root),
+            "a path that does not resolve is not one that does"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    #[should_panic(expected = "so no comparison of the two says anything")]
+    fn same_path_refuses_to_answer_when_neither_side_resolves() {
+        let root = std::env::temp_dir().join(format!("tactus-util-absent-{}", std::process::id()));
+        let _ = same_path(&root.join("a"), &root.join("b"));
+    }
+
+    /// The directory barrier runs, and runs on **this** platform
+    /// (`PR5-CONF-013`).
+    ///
+    /// The two axes this crosses are the *operation* and the *platform*. Every
+    /// caller's ledger assertion holds the operation constant — stage, rename,
+    /// then a `SyncedDirectory` record — and until this round those assertions
+    /// forked on `cfg!(unix)`, so the Windows cell asserted the barrier's
+    /// **absence** and the pair "the barrier, on Windows" was never built. What
+    /// varies here is the platform, and nothing is `cfg`-gated away: the call
+    /// must succeed wherever the suite runs.
+    ///
+    /// A ledger record is not enough on its own — a caller records beside the
+    /// call — so this drives the primitive directly, and drives it against a
+    /// directory that has just changed, which is the only state the barrier is
+    /// ever asked about.
+    #[test]
+    fn the_directory_barrier_runs_on_this_platform() {
+        let root = std::env::temp_dir().join(format!("tactus-util-fsync-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("a scratch directory");
+
+        // A directory entry that was just created, then just renamed: the two
+        // changes `run_creation` asks to be made durable.
+        let staged = root.join("record.tmp");
+        std::fs::write(&staged, b"{}\n").expect("stage");
+        fsync_dir(&root).expect("the barrier must run on this platform after a create");
+        std::fs::rename(&staged, root.join("record")).expect("publish");
+        fsync_dir(&root).expect("the barrier must run on this platform after a rename");
+
+        // A directory that is not there is an error rather than a silent
+        // success, so a caller cannot be told a name is durable when nothing
+        // was opened at all — which is exactly what the non-unix arm used to do.
+        let absent = fsync_dir(&root.join("absent"));
+        assert!(
+            absent.is_err(),
+            "the barrier reported success for a directory that does not exist"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The Windows access mask is the one the barrier actually needs, and a
+    /// weaker one is refused (`PR5-CONF-013`).
+    ///
+    /// `FlushFileBuffers` documents that its handle must carry write access, and
+    /// a claim like that is worth exactly as much as the run that checks it —
+    /// this project has shipped a "documented" platform boundary that was a
+    /// missing flag twice now. So the same code path is driven with
+    /// `GENERIC_READ` alone: if that succeeded, `WINDOWS_DIRECTORY_ACCESS` would
+    /// be asking for a right it does not need, and if it fails the constant is
+    /// pinned to a measured requirement rather than to a doc sentence.
+    ///
+    /// Held constant: the directory, the flags and the share mode. Varying: the
+    /// desired access.
+    #[cfg(windows)]
+    #[test]
+    fn the_directory_barrier_needs_exactly_the_access_it_asks_for() {
+        let root = std::env::temp_dir().join(format!("tactus-util-mask-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("a scratch directory");
+        std::fs::write(root.join("record"), b"{}\n").expect("a changed directory");
+
+        windows_fsync_dir(&root, WINDOWS_DIRECTORY_ACCESS)
+            .expect("the production mask must flush a directory");
+
+        let read_only = windows_fsync_dir(&root, windows_sys::Win32::Foundation::GENERIC_READ);
+        let refusal = read_only
+            .expect_err("a read-only handle must not be able to flush; the mask is over-asking");
+        assert_eq!(
+            refusal.raw_os_error(),
+            Some(5),
+            "the refusal must be ERROR_ACCESS_DENIED, which is what makes the write \
+             right load-bearing rather than incidental: {refusal:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

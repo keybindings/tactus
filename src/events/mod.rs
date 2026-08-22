@@ -18,11 +18,13 @@
 //! it had left edits in the working tree. After a crash that tree is rolled
 //! back, so the belief is false and §14's pairing of session-resume with
 //! tree-retention is broken. `run_resumed` clears both.
+// LEGACY-EFFECT: this module is in the **frozen legacy section** of
+// `effects/allowlist.toml`, which carries its justification and the condition
+// under which the section shrinks. `decisions.effect_site_inventory.mechanism` (2).
+#![allow(clippy::disallowed_methods, clippy::disallowed_types)]
 
 use std::fmt;
-use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -33,6 +35,16 @@ use crate::interaction::QuestionRecord;
 use crate::ir::{Answer, Effort, Question, QuestionId, ResolvedEffortPolicy, Tier};
 use crate::ladder::{FailureKind, FailureOrigin};
 use crate::util;
+
+pub mod log;
+
+// The public paths are unchanged: `crate::events::EventLog`,
+// `crate::events::read_all` and `crate::events::LogTail` are what every caller
+// outside this module already names, and `decisions.pr_sequence[6].scope`
+// requires the first of those to stay put ("EventLog writer moved to
+// src/events/log.rs (**public path crate::events::EventLog unchanged**)").
+pub use log::{EventLog, LogTail, read_all};
+pub(crate) use log::{ParsedLines, parse_bytes, read_bytes};
 
 /// Bumped when an event's meaning changes in a way an older binary would
 /// **misread**. A newer log is refused rather than folded on a guess — silently
@@ -1471,217 +1483,6 @@ impl RunState {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Log IO
-// ---------------------------------------------------------------------------
-
-/// The append-only writer. One per run, held by the engine — `tactus answer`
-/// deliberately does not write here (it drops a file the engine ingests), so
-/// the log has exactly one writer and interleaved lines are impossible.
-#[derive(Debug)]
-pub struct EventLog {
-    path: PathBuf,
-    file: File,
-}
-
-impl EventLog {
-    /// Open for appending, discarding an incomplete trailing record first.
-    ///
-    /// A process killed mid-write can leave a line with no newline. Appending
-    /// straight after it would splice the fragment and the next event into one
-    /// unparseable line, losing both.
-    ///
-    /// Terminating the fragment with a newline instead is worse than it looks:
-    /// it promotes a torn *tail*, which [`read_all`] recovers from, into an
-    /// unparseable line in the *middle*, which [`read_all`] must treat as a
-    /// rewritten log and refuse. So the fragment is truncated away. That is
-    /// not rewriting history — those bytes are by construction an event that
-    /// never finished being written, and no reader could ever have parsed
-    /// them — and it keeps "damage anywhere but the end means corruption" a
-    /// statement the reader can still trust.
-    pub fn open(path: &Path, warnings: &mut Vec<String>) -> Result<Self, TactusError> {
-        let io = |source| TactusError::Io {
-            path: path.to_path_buf(),
-            source,
-        };
-        // Truncate before taking the append handle, through a handle of its
-        // own. On Windows an append-only handle is opened with
-        // FILE_APPEND_DATA and *not* FILE_WRITE_DATA, so `set_len` on it fails
-        // outright with access denied.
-        match std::fs::read(path) {
-            Ok(existing) if !existing.is_empty() && existing.last() != Some(&b'\n') => {
-                let keep = existing
-                    .iter()
-                    .rposition(|byte| *byte == b'\n')
-                    .map_or(0, |index| index + 1);
-                OpenOptions::new()
-                    .write(true)
-                    .open(path)
-                    .map_err(io)?
-                    .set_len(keep as u64)
-                    .map_err(io)?;
-                warnings.push(format!(
-                    "{}: discarded {} trailing byte(s) of an event that was never finished being \
-                     written — the shape an interrupted run leaves behind",
-                    path.display(),
-                    existing.len() - keep
-                ));
-            }
-            Ok(_) => {}
-            Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
-            Err(source) => return Err(io(source)),
-        }
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-            .map_err(io)?;
-        Ok(Self {
-            path: path.to_path_buf(),
-            file,
-        })
-    }
-
-    /// Append one event and get it back **as it will be read back**.
-    ///
-    /// Returning the round-tripped event rather than the one just constructed
-    /// is what keeps "the log is the source of truth" literally true. Anything
-    /// the wire format cannot represent — a sub-millisecond duration, say —
-    /// must not survive in the engine's memory either, or live state would
-    /// quietly hold more than a replay could ever restore and the two would
-    /// disagree in a way no amount of care at the call sites would catch.
-    ///
-    /// Flushed and synced before returning: §19 promises a crash or power loss
-    /// is recoverable by replaying this file, which is only true if the event
-    /// reached the disk before the work it describes carried on. A run emits
-    /// tens of events, so the cost is noise beside a single attempt.
-    pub fn append(&mut self, body: EventBody) -> Result<Event, TactusError> {
-        let event = Event::now(body);
-        let mut line = serde_json::to_string(&event).map_err(|e| TactusError::EventLog {
-            path: self.path.clone(),
-            message: format!("serializing {}: {e}", event.body.kind()),
-        })?;
-        let written = serde_json::from_str(&line).map_err(|e| TactusError::EventLog {
-            path: self.path.clone(),
-            message: format!(
-                "{} does not survive its own wire format ({e}); the log could not be replayed",
-                event.body.kind()
-            ),
-        })?;
-        line.push('\n');
-        let io = |source| TactusError::Io {
-            path: self.path.clone(),
-            source,
-        };
-        self.file.write_all(line.as_bytes()).map_err(io)?;
-        self.file.flush().map_err(io)?;
-        self.file.sync_data().map_err(io)?;
-        Ok(written)
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-/// Read a whole log.
-///
-/// An unterminated **final** record is a torn tail — the shape a kill leaves —
-/// and is dropped with a warning. A newline is the commit marker written after
-/// every event, so any invalid newline-terminated record is corruption even
-/// when it is last: something rewrote history, and deriving state from the
-/// survivors would produce a confident wrong answer. That errors.
-pub fn read_all(path: &Path, warnings: &mut Vec<String>) -> Result<Vec<Event>, TactusError> {
-    let bytes = read_bytes(path)?;
-    let parsed = parse_bytes(path, &bytes)?;
-    warnings.extend(parsed.torn_tail_warning);
-    Ok(parsed.events)
-}
-
-/// Read the exact bytes a whole-log consumer will parse. Kept separate so a
-/// consumer that needs a stable snapshot can compare two reads before trusting
-/// the first one.
-pub(crate) fn read_bytes(path: &Path) -> Result<Vec<u8>, TactusError> {
-    match std::fs::read(path) {
-        Ok(bytes) => Ok(bytes),
-        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
-            Err(TactusError::EventLog {
-                path: path.to_path_buf(),
-                message: "no event log here — this run never started, or its directory was \
-                          removed"
-                    .to_owned(),
-            })
-        }
-        Err(source) => Err(TactusError::Io {
-            path: path.to_path_buf(),
-            source,
-        }),
-    }
-}
-
-/// A parsed whole-log snapshot. The only recoverable parse condition is typed
-/// separately from the events so callers never have to infer its meaning from
-/// human-readable warning text.
-pub(crate) struct ParsedLines {
-    pub events: Vec<Event>,
-    pub torn_tail_warning: Option<String>,
-}
-
-pub(crate) fn parse_bytes(path: &Path, bytes: &[u8]) -> Result<ParsedLines, TactusError> {
-    // EventLog::append writes the newline after the JSON bytes. EventLog::open
-    // likewise discards everything after the last newline before resuming, so
-    // whole-log readers must use the same boundary: even syntactically complete
-    // JSON without its terminating newline was never a committed event.
-    let committed_end = bytes
-        .iter()
-        .rposition(|byte| *byte == b'\n')
-        .map_or(0, |position| position + 1);
-    let (committed_bytes, trailing) = bytes.split_at(committed_end);
-    let torn_tail_warning = (!trailing.is_empty()).then(|| {
-        format!(
-            "{}: dropped an incomplete final line ({} trailing byte(s)) — the shape an \
-             interrupted write leaves behind",
-            path.display(),
-            trailing.len()
-        )
-    });
-    let committed = std::str::from_utf8(committed_bytes).map_err(|error| {
-        let line = committed_bytes[..error.valid_up_to()]
-            .iter()
-            .filter(|byte| **byte == b'\n')
-            .count()
-            + 1;
-        TactusError::EventLog {
-            path: path.to_path_buf(),
-            message: format!(
-                "line {line} contains invalid UTF-8 in a committed event ({error}). This is not a \
-                 torn tail — the log has been rewritten, and state derived from what is left \
-                 would be confidently wrong."
-            ),
-        }
-    })?;
-
-    let mut events = Vec::with_capacity(committed.lines().count());
-    for (position, line) in committed.lines().enumerate() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let event = serde_json::from_str::<Event>(line).map_err(|error| TactusError::EventLog {
-            path: path.to_path_buf(),
-            message: format!(
-                "line {} is not a valid event ({error}). This is not a torn tail — the log has \
-                 been rewritten, and state derived from what is left would be confidently wrong.",
-                position + 1
-            ),
-        })?;
-        events.push(event);
-    }
-    Ok(ParsedLines {
-        events,
-        torn_tail_warning,
-    })
-}
-
 /// The result of folding a log: the state, plus the run metadata a reader
 /// needs but that is not task state.
 ///
@@ -2393,65 +2194,14 @@ fn valid_attempt_decision(
     }
 }
 
-/// Incremental reader for `status --follow`.
-///
-/// Reads only complete lines: a poll that catches the writer mid-line stops at
-/// the last newline and picks the rest up next time, so a follower never sees
-/// half an event.
-#[derive(Debug)]
-pub struct LogTail {
-    path: PathBuf,
-    offset: u64,
-}
-
-impl LogTail {
-    pub fn new(path: PathBuf) -> Self {
-        Self { path, offset: 0 }
-    }
-
-    /// Start from the end, so a follower attached to a live run reports only
-    /// what happens from now on.
-    pub fn skip_existing(&mut self) {
-        self.offset = std::fs::metadata(&self.path).map_or(0, |meta| meta.len());
-    }
-
-    pub fn poll(&mut self, warnings: &mut Vec<String>) -> Result<Vec<Event>, TactusError> {
-        let io = |source| TactusError::Io {
-            path: self.path.clone(),
-            source,
-        };
-        let Ok(mut file) = File::open(&self.path) else {
-            return Ok(Vec::new());
-        };
-        let length = file.metadata().map_err(io)?.len();
-        if length <= self.offset {
-            // Truncated or replaced underneath us: start over rather than
-            // read from an offset that now means something else.
-            if length < self.offset {
-                self.offset = 0;
-            }
-            if length == self.offset {
-                return Ok(Vec::new());
-            }
-        }
-        file.seek(SeekFrom::Start(self.offset)).map_err(io)?;
-        let mut buffer = Vec::new();
-        file.read_to_end(&mut buffer).map_err(io)?;
-        let Some(end) = buffer.iter().rposition(|byte| *byte == b'\n') else {
-            return Ok(Vec::new());
-        };
-        let complete = &buffer[..=end];
-        self.offset += complete.len() as u64;
-        let parsed = parse_bytes(&self.path, complete)?;
-        warnings.extend(parsed.torn_tail_warning);
-        Ok(parsed.events)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ir::{QuestionKind, TaskId};
+    use crate::topology::effects::EventSite;
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    use std::path::PathBuf;
 
     fn effort_policy() -> ResolvedEffortPolicy {
         ResolvedEffortPolicy {
@@ -2828,13 +2578,16 @@ mod tests {
         std::fs::write(&path, format!("{good}\n{{\"ts\":\"trunc")).expect("write");
 
         let mut warnings = Vec::new();
-        let mut log = EventLog::open(&path, &mut warnings).expect("open");
+        let mut log = EventLog::open(EventSite::LegacyOpenLog, &path, &mut warnings).expect("open");
         assert!(
             warnings.iter().any(|w| w.contains("never finished")),
             "the discard is reported, not silent: {warnings:?}"
         );
-        log.append(attempt_started("t1", 1, 0, "small"))
-            .expect("append");
+        log.append(
+            EventSite::LegacyAppend,
+            attempt_started("t1", 1, 0, "small"),
+        )
+        .expect("append");
 
         // Splicing would have lost both the fragment and the new event;
         // newline-terminating the fragment would have left an unparseable
@@ -2857,8 +2610,9 @@ mod tests {
         std::fs::write(&path, "{\"ts\":\"2026").expect("write");
 
         let mut warnings = Vec::new();
-        let mut log = EventLog::open(&path, &mut warnings).expect("open");
-        log.append(started()).expect("append");
+        let mut log = EventLog::open(EventSite::LegacyOpenLog, &path, &mut warnings).expect("open");
+        log.append(EventSite::LegacyAppend, started())
+            .expect("append");
 
         let mut warnings = Vec::new();
         let events = read_all(&path, &mut warnings).expect("read");
@@ -4072,15 +3826,19 @@ mod tests {
         let dir = scratch("tail");
         let path = dir.join("events.jsonl");
         let mut warnings = Vec::new();
-        let mut log = EventLog::open(&path, &mut warnings).expect("open");
-        log.append(started()).expect("append");
+        let mut log = EventLog::open(EventSite::LegacyOpenLog, &path, &mut warnings).expect("open");
+        log.append(EventSite::LegacyAppend, started())
+            .expect("append");
 
         let mut tail = LogTail::new(path.clone());
         assert_eq!(tail.poll(&mut warnings).expect("poll").len(), 1);
         assert!(tail.poll(&mut warnings).expect("poll").is_empty());
 
-        log.append(attempt_started("t1", 1, 0, "small"))
-            .expect("append");
+        log.append(
+            EventSite::LegacyAppend,
+            attempt_started("t1", 1, 0, "small"),
+        )
+        .expect("append");
         let seen = tail.poll(&mut warnings).expect("poll");
         assert_eq!(seen.len(), 1);
         assert_eq!(seen[0].body.kind(), "attempt_started");

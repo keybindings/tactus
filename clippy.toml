@@ -1,0 +1,187 @@
+# The rustc-resolved effect denylist.
+#
+# `decisions.effect_site_inventory.mechanism` (1): "enforcement is rustc-resolved
+# rather than lexical: clippy.toml disallowed-methods, disallowed-types, and
+# disallowed-macros lists (rustc HIR resolution: aliases, re-exports, function
+# values, method calls, and macro-expanded code in this crate resolve to the same
+# DefId) name every effect primitive the crate can reach".
+#
+# Measured on this toolchain (clippy 0.1.97), and the reason the enforcement is
+# not lexical: a renamed import (`use std::fs::write as w`), a re-export
+# (`pub use std::fs::write`) and a function value (`let f = std::fs::write::<_,_>`)
+# each report as `std::fs::write` and each is denied. `effects::tests::
+# every_declared_effect_denial_refuses_for_the_reason_it_declares` compiles one
+# fixture per shape and asserts the emitted lint set, so that claim is executed
+# rather than believed.
+#
+# WHERE AN ALLOW MAY LIVE. Only as a module-level attribute in a file listed in
+# `effects/allowlist.toml`, enforced by `effects::tests::
+# every_allow_of_a_governed_lint_is_module_level_and_in_the_allowlist`.
+#
+# THE ONE THING THIS FILE CANNOT TELL YOU. A path that does not resolve is a
+# denial that enforces nothing, and clippy reports it as a bare `warning:` that
+# `-D warnings` does NOT escalate (measured). `effects::tests::
+# every_denied_path_this_host_can_resolve_does_resolve` runs clippy-driver over a
+# probe with this file and fails on any such notice, with a positive control so a
+# vacuous run is impossible.
+
+disallowed-methods = [
+    # -- std::fs free functions -------------------------------------------
+    # "std::fs write/create/remove_file/remove_dir/remove_dir_all/rename/copy/
+    #  hard_link/set_permissions/create_dir/create_dir_all/DirBuilder"
+    { path = "std::fs::write", reason = "TACTUS-EFFECT R21/R18: write through a funnel that takes a site (rundir::write_plan, workspace_manager::write_intent, events::log)" },
+    { path = "std::fs::remove_file", reason = "TACTUS-EFFECT: deletion is a funnel with a containment check; a private half needs a PrivateHalfProof" },
+    { path = "std::fs::remove_dir", reason = "TACTUS-EFFECT: deletion is a funnel with a containment check" },
+    { path = "std::fs::remove_dir_all", reason = "TACTUS-EFFECT: deletion is a funnel with a containment check; a private half needs a PrivateHalfProof" },
+    { path = "std::fs::rename", reason = "TACTUS-EFFECT: publication is a funnel site (RunDir.Publish*, Answer.PublishRename)" },
+    { path = "std::fs::copy", reason = "TACTUS-EFFECT: a copy is not a publication; publication renames" },
+    { path = "std::fs::hard_link", reason = "TACTUS-EFFECT: creates a second name for a file outside any row" },
+    { path = "std::fs::set_permissions", reason = "TACTUS-EFFECT: mutates a path nothing accounts for" },
+    { path = "std::fs::create_dir", reason = "TACTUS-EFFECT R18/R21: directory creation is a funnel site" },
+    { path = "std::fs::create_dir_all", reason = "TACTUS-EFFECT R18/R21: directory creation is a funnel site" },
+    { path = "std::fs::soft_link", reason = "TACTUS-EFFECT: symlink creation; the slice refuses reparse points on its chains" },
+
+    # -- std::fs::File ----------------------------------------------------
+    # "File::create/create_new/options/set_len/sync_data/sync_all"
+    { path = "std::fs::File::create", reason = "TACTUS-EFFECT: creates and truncates; Event.OpenLog is the funnel for the log" },
+    { path = "std::fs::File::create_new", reason = "TACTUS-EFFECT: creates" },
+    { path = "std::fs::File::options", reason = "TACTUS-EFFECT: hands out an OpenOptions, which is itself denied" },
+    { path = "std::fs::File::set_len", reason = "TACTUS-EFFECT: truncation; Event.OpenLog.TruncateTornTail is the funnel's own point" },
+    { path = "std::fs::File::sync_data", reason = "TACTUS-EFFECT: the durability barrier; Event.OpenLog.SyncPrefix and the append points are where it is observed" },
+    { path = "std::fs::File::sync_all", reason = "TACTUS-EFFECT: the durability barrier" },
+
+    # -- io::Write on files ----------------------------------------------
+    # "io::Write::write_all/flush on files". Every byte-emitting method of the
+    # trait, not only the two the sentence names: `write`, `write_vectored` and
+    # `write_fmt` reach the same primitive, and `write_fmt` is what `write!` and
+    # `writeln!` expand to -- which is the macro-expansion case the mechanism
+    # sentence says must resolve to the same DefId. `std::fmt::Write::write_fmt`
+    # is a different DefId, so a `write!(formatter, ..)` in a Display impl is
+    # untouched by this entry.
+    { path = "std::io::Write::write_all", reason = "TACTUS-EFFECT: the Event funnel owns the only write path to the log" },
+    { path = "std::io::Write::write", reason = "TACTUS-EFFECT: same primitive as write_all, one call short" },
+    { path = "std::io::Write::write_vectored", reason = "TACTUS-EFFECT: same primitive as write_all" },
+    { path = "std::io::Write::write_fmt", reason = "TACTUS-EFFECT: what write!/writeln! expand to on a file" },
+    { path = "std::io::Write::flush", reason = "TACTUS-EFFECT: the flush the append points observe" },
+
+    # -- symlink creation on both platforms -------------------------------
+    { path = "std::os::unix::fs::symlink", reason = "TACTUS-EFFECT: symlink creation", allow-invalid = true },
+    { path = "std::os::windows::fs::symlink_file", reason = "TACTUS-EFFECT: symlink creation", allow-invalid = true },
+    { path = "std::os::windows::fs::symlink_dir", reason = "TACTUS-EFFECT: symlink creation", allow-invalid = true },
+
+    # -- std::process::Command's effectful methods ------------------------
+    # The type is denied too; these are the calls that actually start a process.
+    { path = "std::process::Command::spawn", reason = "TACTUS-EFFECT R22: process start goes through the Runner (Process.Spawn)" },
+    { path = "std::process::Command::output", reason = "TACTUS-EFFECT R22: process start goes through the Runner (Process.Spawn)" },
+    { path = "std::process::Command::status", reason = "TACTUS-EFFECT R22: process start goes through the Runner (Process.Spawn)" },
+
+    # -- libc ---------------------------------------------------------------
+    # "libc fork/kill/setpgid/setsid/flock/fcntl/exec*" -- and every other libc
+    # effect primitive this crate actually reaches, because `claim_scope` makes
+    # exhaustiveness "the disallowed list is complete for the primitives the
+    # crate uses", not "the list repeats the sentence". The classification of
+    # every `libc::` item in the tree, effect and non-effect with the reason, is
+    # `effects/wrappers.toml`'s `[libc]` section.
+    { path = "libc::fork", reason = "TACTUS-EFFECT R22: Spawn.ReaperStarted and the pre-exec points are the funnel's" },
+    { path = "libc::kill", reason = "TACTUS-EFFECT R22: signalling a process or group" },
+    { path = "libc::setpgid", reason = "TACTUS-EFFECT R22: Spawn.PreExecPgidAndRegister" },
+    { path = "libc::setsid", reason = "TACTUS-EFFECT R22: session leadership" },
+    { path = "libc::flock", reason = "TACTUS-EFFECT R17/R28: lock acquisition is Lock.Acquire*/ObserveCleanupHold" },
+    { path = "libc::fcntl", reason = "TACTUS-EFFECT R17: F_SETLK is the run lock; F_SETFL mutates an open description" },
+    { path = "libc::execv", reason = "TACTUS-EFFECT R22: Spawn.Exec" },
+    { path = "libc::execve", reason = "TACTUS-EFFECT R22: Spawn.Exec" },
+    { path = "libc::execvp", reason = "TACTUS-EFFECT R22: Spawn.Exec" },
+    { path = "libc::execl", reason = "TACTUS-EFFECT R22: Spawn.Exec" },
+    { path = "libc::execle", reason = "TACTUS-EFFECT R22: Spawn.Exec" },
+    { path = "libc::execlp", reason = "TACTUS-EFFECT R22: Spawn.Exec" },
+    { path = "libc::open", reason = "TACTUS-EFFECT: opens and can create a path" },
+    { path = "libc::close", reason = "TACTUS-EFFECT R17/R28: closing the descriptor releases the hold" },
+    { path = "libc::write", reason = "TACTUS-EFFECT: writes bytes to a descriptor" },
+    { path = "libc::unlink", reason = "TACTUS-EFFECT: deletion" },
+    { path = "libc::rmdir", reason = "TACTUS-EFFECT: deletion" },
+    { path = "libc::mkfifo", reason = "TACTUS-EFFECT: creates a path" },
+    { path = "libc::mkdtemp", reason = "TACTUS-EFFECT: creates a directory" },
+    { path = "libc::pipe", reason = "TACTUS-EFFECT: creates descriptors" },
+    { path = "libc::pipe2", reason = "TACTUS-EFFECT: creates descriptors", allow-invalid = true },
+    { path = "libc::waitpid", reason = "TACTUS-EFFECT R22: reaps a child, changing process-table state" },
+    { path = "libc::waitid", reason = "TACTUS-EFFECT R22: reaps a child, changing process-table state" },
+    { path = "libc::signal", reason = "TACTUS-EFFECT: process-wide disposition" },
+    { path = "libc::sigaction", reason = "TACTUS-EFFECT: process-wide disposition" },
+    { path = "libc::sigprocmask", reason = "TACTUS-EFFECT: process-wide mask" },
+    { path = "libc::pthread_sigmask", reason = "TACTUS-EFFECT: thread mask" },
+    { path = "libc::setrlimit", reason = "TACTUS-EFFECT: process-wide limit" },
+    { path = "libc::raise", reason = "TACTUS-EFFECT: signals this process" },
+    { path = "libc::_exit", reason = "TACTUS-EFFECT: terminates the process without unwinding" },
+    { path = "libc::syscall", reason = "TACTUS-EFFECT: an arbitrary kernel call; close_range and getdents64 reach the kernel through it" },
+
+    # -- windows_sys: process, job, and the file locks ----------------------
+    # "windows_sys process, job, and LockFileEx/UnlockFileEx functions".
+    # Unresolvable on a Unix host: clippy silently ignores a path whose crate is
+    # not linked (measured -- not even the unreachable-path warning fires), so
+    # these are enforced by the msvc-target clippy run and cross-checked against
+    # the tree's own Windows source by
+    # `effects::tests::every_platform_conditional_denial_names_something_real`.
+    { path = "windows_sys::Win32::Storage::FileSystem::LockFileEx", reason = "TACTUS-EFFECT R17/R25: lock acquisition is Lock.Acquire*" },
+    { path = "windows_sys::Win32::Storage::FileSystem::UnlockFileEx", reason = "TACTUS-EFFECT R17: lock release is Lock.Release" },
+    { path = "windows_sys::Win32::System::Threading::CreateProcessW", reason = "TACTUS-EFFECT R22: Spawn.CreatedSuspended" },
+    { path = "windows_sys::Win32::System::Threading::OpenProcess", reason = "TACTUS-EFFECT R22: takes a handle on another process" },
+    { path = "windows_sys::Win32::System::Threading::TerminateProcess", reason = "TACTUS-EFFECT R22: kills a process" },
+    { path = "windows_sys::Win32::System::Threading::ResumeThread", reason = "TACTUS-EFFECT R22: Spawn.Resumed" },
+    { path = "windows_sys::Win32::System::Threading::SuspendThread", reason = "TACTUS-EFFECT R22: suspends a thread of another process" },
+    { path = "windows_sys::Win32::System::JobObjects::CreateJobObjectW", reason = "TACTUS-EFFECT R22: the ambient and private job objects" },
+    { path = "windows_sys::Win32::System::JobObjects::OpenJobObjectW", reason = "TACTUS-EFFECT R22: takes a handle on a job object" },
+    { path = "windows_sys::Win32::System::JobObjects::AssignProcessToJobObject", reason = "TACTUS-EFFECT R22: Spawn.PrivateJobAssigned and Spawn.AmbientJobJoined" },
+    { path = "windows_sys::Win32::System::JobObjects::SetInformationJobObject", reason = "TACTUS-EFFECT R22: kill-on-close is set here" },
+    { path = "windows_sys::Win32::System::JobObjects::TerminateJobObject", reason = "TACTUS-EFFECT R22: kills a whole job" },
+
+    # -- crate-internal effectful wrappers ----------------------------------
+    # `mechanism` (3): "every pubfn of a legacy or shared module is classified
+    # effectful or effect-free by review; effectful wrappers are added to the
+    # disallowed list themselves, so a topology module cannot reach an effect
+    # through a legacy wrapper while legacy modules keep calling them under their
+    # module allow". The classification is `effects/wrappers.toml`; every row it
+    # marks `effectful` and not `funnel` appears here, asserted by
+    # `effects::tests::every_effectful_wrapper_is_on_the_disallowed_list`.
+    #
+    # `EventLog::open`/`EventLog::append` are deliberately absent: `mechanism`
+    # classifies them "as the Event funnel (site-taking) rather than as
+    # wrappers".
+    { path = "tactus::util::fsync_file", reason = "TACTUS-WRAPPER R21/R18: the file half of the durability barrier; the ledger entry beside it belongs to a site-taking funnel" },
+    { path = "tactus::util::fsync_dir", reason = "TACTUS-WRAPPER R21/R18: the directory half of the durability barrier; the ledger entry beside it belongs to a site-taking funnel" },
+    { path = "tactus::util::write_text", reason = "TACTUS-WRAPPER: wraps std::fs::write; a topology write goes through a site-taking funnel" },
+    { path = "tactus::util::write_json", reason = "TACTUS-WRAPPER: the mechanism sentence's own example; wraps std::fs::write" },
+    { path = "tactus::interaction::write_question", reason = "TACTUS-WRAPPER: delegates to rundir::write_question_payload; call the funnel and pass the site" },
+    { path = "tactus::interaction::write_answer", reason = "TACTUS-WRAPPER: delegates to the Answer.StageWrite/PublishRename funnels" },
+    { path = "tactus::workspace::Workspace::run_git_with_private_hooks", reason = "TACTUS-WRAPPER: the legacy engine's git subprocess; schema-4 Git goes through workspace_manager's funnels" },
+    { path = "tactus::workspace::Workspace::branch_exists", reason = "TACTUS-WRAPPER: legacy git subprocess; Ref.* is the schema-4 path" },
+    { path = "tactus::workspace::Workspace::current_branch_ref", reason = "TACTUS-WRAPPER: legacy git subprocess" },
+    { path = "tactus::workspace::Workspace::parent_sha", reason = "TACTUS-WRAPPER: legacy git subprocess" },
+    { path = "tactus::workspace::Workspace::prepared_commit_matches", reason = "TACTUS-WRAPPER: legacy git subprocess" },
+    { path = "tactus::workspace::Workspace::prepared_pin_target", reason = "TACTUS-WRAPPER: legacy git subprocess" },
+    { path = "tactus::workspace::Workspace::ensure_run_exclusions", reason = "TACTUS-WRAPPER: writes the run-exclusion file and creates its directory outside any RunDir site" },
+    { path = "tactus::gates::ShellKind::command", reason = "TACTUS-WRAPPER: hands out a std::process::Command; every gate process goes through the Runner" },
+    { path = "tactus::gates::run_all", reason = "TACTUS-WRAPPER: writes gate logs with fs::write outside any RunDir site" },
+    { path = "tactus::review::run_review", reason = "TACTUS-WRAPPER: writes review transcripts through util::write_text" },
+    { path = "tactus::answer::answer", reason = "TACTUS-WRAPPER: creates the answers directory before staging" },
+    { path = "tactus::connect::run_with", reason = "TACTUS-WRAPPER: creates a directory and writes the operator's tactus.toml" },
+    { path = "tactus::runner::host::build_command", reason = "TACTUS-WRAPPER: RETURNS a std::process::Command -- the one thing the funnel section's review clause forbids. Recorded as PR5D-FUNNEL-RETURNS-A-COMMAND in reviews/FINDINGS.md; denied here so every caller is an allowlisted module" },
+]
+
+disallowed-types = [
+    { path = "std::fs::OpenOptions", reason = "TACTUS-EFFECT: the general door to a writable handle; funnels never return one" },
+    { path = "std::fs::DirBuilder", reason = "TACTUS-EFFECT R18/R21: directory creation is a funnel site" },
+    { path = "std::process::Command", reason = "TACTUS-EFFECT R22: process start goes through the Runner (Process.Spawn)" },
+]
+
+# The macros that reach an external effect and that no method entry can catch,
+# because the primitive they reach is inside std (`std::io::_print`) rather than
+# in this crate. `write!`/`writeln!` are NOT here: they expand to
+# `std::io::Write::write_fmt`, which is a disallowed method above and is precise
+# about the receiver -- listing the macros would deny every `write!(f, ..)` in a
+# Display impl, which is not an effect.
+disallowed-macros = [
+    { path = "std::print", reason = "TACTUS-EFFECT: the process's own stdout; a headless engine reports through the CLI surface, not from inside a funnel" },
+    { path = "std::println", reason = "TACTUS-EFFECT: the process's own stdout" },
+    { path = "std::eprint", reason = "TACTUS-EFFECT: the process's own stderr" },
+    { path = "std::eprintln", reason = "TACTUS-EFFECT: the process's own stderr" },
+]

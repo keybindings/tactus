@@ -44,19 +44,23 @@
 //! Docs:
 //! <https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-programmatic-reference>
 //! (flags verified Aug 2026).
+// LEGACY-EFFECT: this module is in the **frozen legacy section** of
+// `effects/allowlist.toml`, which carries its justification and the condition
+// under which the section shrinks. `decisions.effect_site_inventory.mechanism` (2).
+#![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
 
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::OnceLock;
 use std::time::Duration;
 
 use serde_json::json;
 
 use super::bin::{self, Invocation};
-use super::proc::{self, ProcessOutput};
-use super::{AgentAdapter, Caps, Discovery, TaskRun, looks_rate_limited};
+use super::proc::ProcessOutput;
+use super::{AgentAdapter, Caps, Discovery, TaskRun, looks_rate_limited, probe_request};
 use crate::error::TactusError;
 use crate::ir::{Effort, Outcome, OutcomeStatus, PermissionMode, WorkerProfile};
+use crate::runner::{CommandSpec, Runner};
 use crate::util;
 
 pub const ADAPTER_ID: &str = "copilot";
@@ -93,6 +97,18 @@ const REQUIRED_FLAGS: [&str; 5] = [
 /// refusal is most of what probing actually buys.
 const REQUIRED_SHORT_FLAGS: [&str; 1] = ["-s"];
 
+/// Which of this adapter's pre-flight processes each identity is. See
+/// [`super::probe_request`] for why these are named rather than counted.
+/// `discover` spawns nothing here — this CLI answers no auth query — so there
+/// are two.
+mod probe_ordinal {
+    pub const VERSION: u32 = 0;
+    pub const HELP: u32 = 1;
+    /// Every ordinal above, for the uniqueness assertion.
+    #[cfg(test)]
+    pub const ALL: [u32; 2] = [VERSION, HELP];
+}
+
 pub struct CopilotAdapter;
 
 impl AgentAdapter for CopilotAdapter {
@@ -100,13 +116,14 @@ impl AgentAdapter for CopilotAdapter {
         ADAPTER_ID
     }
 
-    fn probe(&self) -> Result<Caps, TactusError> {
+    fn probe(&self, runner: &dyn Runner) -> Result<Caps, TactusError> {
         let invocation = locate()?;
-        let out = proc::run_with_timeout(
-            invocation.command(&["--version".to_owned()]),
-            "",
+        let out = runner.run(&probe_request(
+            ADAPTER_ID,
+            invocation.spec(&["--version".to_owned()])?,
+            probe_ordinal::VERSION,
             PROBE_TIMEOUT,
-        )?;
+        )?)?;
         if out.output_limited {
             return Err(TactusError::Agent {
                 message: format!(
@@ -132,11 +149,12 @@ impl AgentAdapter for CopilotAdapter {
         }
         let version = bin::extract_version(&out.stdout);
 
-        let help = proc::run_with_timeout(
-            invocation.command(&["--help".to_owned()]),
-            "",
+        let help = runner.run(&probe_request(
+            ADAPTER_ID,
+            invocation.spec(&["--help".to_owned()])?,
+            probe_ordinal::HELP,
             PROBE_TIMEOUT,
-        )?;
+        )?)?;
         let help_text = checked_help(&invocation.display(), &help)?;
         validate_help(&version, &help_text)?;
         let has = |flag: &str| super::advertises_flag(&help_text, flag);
@@ -161,11 +179,9 @@ impl AgentAdapter for CopilotAdapter {
         })
     }
 
-    fn build(&self, run: &TaskRun) -> Result<Command, TactusError> {
-        let invocation = locate()?;
-        let mut cmd = invocation.command(&build_args(run));
-        cmd.current_dir(&run.workspace);
-        Ok(cmd)
+    fn build(&self, run: &TaskRun) -> Result<CommandSpec, TactusError> {
+        // No `current_dir`: the runner owns cwd (DESIGN.md:118).
+        locate()?.spec(&build_args(run))
     }
 
     fn parse(&self, out: &ProcessOutput) -> Result<Outcome, TactusError> {
@@ -186,7 +202,7 @@ impl AgentAdapter for CopilotAdapter {
     /// here, and it still is: [`Caps::model_list`] gates any future
     /// enumeration, so the day this CLI grows one, `connect` starts
     /// cross-checking the catalog without another decision being made.
-    fn discover(&self, caps: &Caps) -> Result<Discovery, TactusError> {
+    fn discover(&self, _runner: &dyn Runner, caps: &Caps) -> Result<Discovery, TactusError> {
         // Still located, so `connect` fails this agent the same way pre-flight
         // would rather than writing a pool for a binary that is not there.
         let invocation = locate()?;
@@ -516,6 +532,46 @@ mod tests {
         }
     }
 
+    /// Every pre-flight process of this adapter carries its own identity.
+    ///
+    /// `decisions.admission_and_leases.permits.invocation_identity` says
+    /// "unique **per process**", and this adapter runs 2 of them, so the
+    /// ordinals it fixes must be 2 distinct values. The expected count is
+    /// written here from the steps the adapter performs, not read from the
+    /// table under test — a table that lost an entry would otherwise agree
+    /// with itself.
+    #[test]
+    fn every_preflight_process_has_its_own_ordinal() {
+        use std::collections::BTreeSet;
+
+        let ordinals: BTreeSet<u32> = probe_ordinal::ALL.into_iter().collect();
+        assert_eq!(
+            ordinals.len(),
+            2,
+            "`--version` and `--help`; this CLI answers no auth query — 2 processes, 2 identities"
+        );
+        assert_eq!(probe_ordinal::ALL.len(), 2);
+
+        // And they really do render as 2 distinct identities of the packet's
+        // third form, which is the property the ordinals exist for.
+        let ids: BTreeSet<String> = probe_ordinal::ALL
+            .into_iter()
+            .map(|ordinal| {
+                crate::runner::InvocationId::probe(
+                    crate::runner::ProbeTarget::Agent(crate::runner::AgentId::new(ADAPTER_ID)),
+                    ordinal,
+                )
+                .expect("the adapter id survives an invocation identity")
+                .render()
+            })
+            .collect();
+        assert_eq!(ids.len(), 2);
+        assert!(
+            ids.iter().all(|id| id.starts_with("p.agent-copilot.o")),
+            "the probe form, naming this agent: {ids:?}"
+        );
+    }
+
     #[test]
     fn build_args_cover_the_programmatic_contract() {
         let joined = build_args(&task_run()).join(" ");
@@ -724,10 +780,14 @@ mod tests {
         // The reviewer's verdict travels in exactly this field on the SUCCESS
         // path — leaving it empty makes every review unparseable (step-6 #1).
         let verdict = "```json\n{\"pass\": true, \"reasons\": [\"ok\"]}\n```";
-        let outcome = parse_output(&output(Some(0), &format!("  {verdict}  \n"), ""));
+        let out = output(Some(0), &format!("  {verdict}  \n"), "");
+        let outcome = parse_output(&out);
         assert_eq!(outcome.status, OutcomeStatus::Completed);
         assert_eq!(outcome.detail.as_deref(), Some(verdict));
         assert!(outcome.diff.is_empty(), "diff is engine-owned");
+        // What the supervisor measured, carried through unchanged: see the
+        // same assertion in the Claude adapter for why it is asserted at all.
+        assert_eq!(outcome.duration, out.duration);
     }
 
     #[test]
@@ -803,7 +863,9 @@ mod tests {
             eprintln!("copilot not on PATH; skipping live probe");
             return;
         }
-        let caps = CopilotAdapter.probe().expect("probe should succeed");
+        let caps = CopilotAdapter
+            .probe(&crate::runner::host::HostRunner::new())
+            .expect("probe should succeed");
         assert!(!caps.version.is_empty());
         assert!(!caps.cost_reporting, "this route reports no spend");
     }

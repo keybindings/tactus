@@ -837,9 +837,17 @@ pub fn report(
             });
             continue;
         };
-        match adapter.probe().and_then(|caps| {
+        // `capacity` runs no run, so it has no run's Runner to borrow: it
+        // makes its own host one. That is still the Runner seam rather than a
+        // bare spawn — `invariants_introduced[0]` is "every CLI and gate
+        // process executes through Runner" — but it is deliberately *not*
+        // inside INV-18's ambient job, which is the coordinator's and which
+        // this command is not (`main::the_commands_that_spawn_outside_a_run_
+        // are_named_and_counted`).
+        let runner = crate::runner::host::HostRunner::new();
+        match adapter.probe(&runner).and_then(|caps| {
             adapter
-                .discover(&caps)
+                .discover(&runner, &caps)
                 .map(|discovery| (caps.version.clone(), discovery))
         }) {
             Ok((version, discovery)) => {

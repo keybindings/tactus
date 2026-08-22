@@ -1,5 +1,9 @@
 //! `tactus validate`: parse → config → graph checks → routing preview →
 //! rendered report. No execution of anything.
+// LEGACY-EFFECT: this module is in the **frozen legacy section** of
+// `effects/allowlist.toml`, which carries its justification and the condition
+// under which the section shrinks. `decisions.effect_site_inventory.mechanism` (2).
+#![allow(clippy::disallowed_methods)]
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -26,6 +30,14 @@ pub struct ValidateOptions {
     pub config_root: PathBuf,
     /// Pools file override for tests; `None` discovers `~/.tactus/pools.toml`.
     pub pools_path: Option<PathBuf>,
+    /// Which reading of `[engine]`'s ceilings applies (see
+    /// [`config::EngineLimits`]). `Fresh` for `tactus validate` and for a run
+    /// about to be created; a resume passes the reading its own recorded schema
+    /// selects.
+    ///
+    /// Carried here rather than decided inside `analyze` because only the
+    /// caller knows which it is, and the difference is a refusal.
+    pub engine_limits: config::EngineLimits,
 }
 
 #[derive(Debug)]
@@ -67,21 +79,93 @@ pub struct Analysis {
     pub warnings: Vec<String>,
 }
 
+/// Every file an [`Analysis`] is derived from, captured at one instant.
+///
+/// The set has to be *complete* to be worth anything. A capture that covers the
+/// config but not the plan, or the plan but not the files the gate derivation
+/// reads, licenses exactly the confusion it was introduced to rule out: a caller
+/// compares equal captures, concludes nothing moved, and adopts an analysis that
+/// depended on something outside the comparison. So this names all of them, and
+/// [`analyze_captured`] parses out of it rather than beside it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapturedInputs {
+    plan: config::FileSnapshot,
+    config: config::CapturedConfig,
+    /// The worktree files the gate derivation looks at when `[[gates]]` does not
+    /// spell the gates out: `Cargo.toml`, `go.mod`, and `package.json` beside
+    /// the repo root, which are what [`crate::gates::derive`] consults and the
+    /// whole of what it consults. Captured here so that a change to one of them
+    /// is a change to this analysis's inputs and not an unobserved edit —
+    /// keep this list in step with `gates::derive` itself.
+    gate_inputs: Vec<config::FileSnapshot>,
+}
+
+/// The gate derivation's inputs, relative to the repo root — see
+/// [`CapturedInputs::gate_inputs`].
+const GATE_DERIVATION_INPUTS: &[&str] = &["Cargo.toml", "go.mod", "package.json"];
+
+impl CapturedInputs {
+    /// Capture what an [`analyze`] with these options reads.
+    #[must_use]
+    pub fn capture(opts: &ValidateOptions) -> Self {
+        Self {
+            plan: config::snapshot_file(&opts.plan_path, true),
+            config: config::CapturedConfig::capture(
+                opts.config_path.as_deref(),
+                &opts.config_root,
+                opts.pools_path.as_deref(),
+            ),
+            gate_inputs: GATE_DERIVATION_INPUTS
+                .iter()
+                .map(|name| config::snapshot_file(&opts.config_root.join(name), false))
+                .collect(),
+        }
+    }
+
+    /// Every captured file, in a stable order, for a caller that has to name
+    /// them in a message.
+    pub fn paths(&self) -> Vec<PathBuf> {
+        std::iter::once(&self.plan)
+            .chain(self.config.files())
+            .chain(&self.gate_inputs)
+            .map(|file| file.path().to_path_buf())
+            .collect()
+    }
+}
+
 pub fn analyze(opts: &ValidateOptions) -> Result<Analysis, TactusError> {
-    let raw = fs::read_to_string(&opts.plan_path).map_err(|source| TactusError::Io {
-        path: opts.plan_path.clone(),
-        source,
+    analyze_captured(&CapturedInputs::capture(opts), opts)
+}
+
+/// [`analyze`], out of bytes that were captured earlier.
+///
+/// The plan, the repo config and the pools file are parsed from `captured` and
+/// from nowhere else, so the analysis this returns is bound to those exact
+/// bytes: a caller holding the same `CapturedInputs` can prove what was
+/// validated by comparing it against the filesystem, and a file that changed and
+/// changed back cannot slip between the check and the answer, because there is
+/// only one read.
+///
+/// The one input still read from the filesystem here is the gate derivation's:
+/// [`crate::gates::derive`] takes a directory, and the three files it looks at
+/// are captured but not consumed. A caller that needs the derivation pinned runs
+/// this where the worktree cannot move — see the engine's pre-flight, which
+/// takes its answer under the worktree lease.
+pub fn analyze_captured(
+    captured: &CapturedInputs,
+    opts: &ValidateOptions,
+) -> Result<Analysis, TactusError> {
+    // Named off the capture rather than off `opts`, so an error cannot report a
+    // path other than the one that was actually read.
+    let raw = captured.plan.text()?.ok_or_else(|| TactusError::Io {
+        path: captured.plan.path().to_path_buf(),
+        source: std::io::Error::new(std::io::ErrorKind::NotFound, "plan not found"),
     })?;
     let Parsed {
         plan,
         warnings: mut all_warnings,
     } = plan::detect(&raw)?.parse_with_warnings(&raw)?;
-    let config = config::load(
-        opts.config_path.as_deref(),
-        &opts.config_root,
-        opts.pools_path.as_deref(),
-        &mut all_warnings,
-    )?;
+    let config = config::load_captured(&captured.config, opts.engine_limits, &mut all_warnings)?;
     check_graph(&plan, &mut all_warnings)?;
     let config_path = || {
         opts.config_path
@@ -635,6 +719,7 @@ mod tests {
             plan_path: PathBuf::from(plan),
             config_path: None,
             config_root: hermetic_root,
+            engine_limits: config::EngineLimits::Fresh,
             pools_path: Some({
                 // A real, empty pools file: an explicit `--pools` that does not
                 // exist is a hard error, and `None` would reach for the
@@ -658,6 +743,113 @@ mod tests {
                 .clone()
             }),
         }
+    }
+
+    /// A scratch repo root of its own, so a test that rewrites its inputs
+    /// cannot be read half-written by another running beside it.
+    fn scratch_root(tag: &str) -> PathBuf {
+        let dir = env::temp_dir().join(format!("tactus-validate-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("scratch root");
+        dir
+    }
+
+    /// [`opts`], rooted in `root` rather than in the shared hermetic directory.
+    fn opts_in(root: &Path, plan: &str) -> ValidateOptions {
+        let mut opts = opts(plan);
+        opts.config_root = root.to_path_buf();
+        opts
+    }
+
+    #[test]
+    fn the_captured_set_names_every_file_an_analysis_reads() {
+        // Completeness is the property, and it is the one an incomplete capture
+        // silently loses: a caller comparing two equal captures concludes
+        // nothing moved, so anything outside the comparison is free to move.
+        // The plan, the repo config, the pools file, and the three worktree
+        // files the gate derivation consults are the whole set.
+        let root = scratch_root("capturedset");
+        let plan = root.join("plan.md");
+        fs::write(&plan, "## One\n<!-- tactus: id=t1 depends= -->\n").expect("plan");
+        let mut options = opts_in(&root, plan.to_str().expect("utf-8 path"));
+        options.config_path = Some(root.join("tactus.toml"));
+
+        let captured = CapturedInputs::capture(&options);
+        let mut expected = vec![plan, root.join("tactus.toml")];
+        expected.push(options.pools_path.clone().expect("the fixture pools file"));
+        expected.extend(GATE_DERIVATION_INPUTS.iter().map(|name| root.join(name)));
+        assert_eq!(captured.paths(), expected);
+    }
+
+    #[test]
+    fn an_analysis_is_parsed_out_of_the_captured_plan_not_a_second_read_of_it() {
+        // The plan is an input like any other, and it was the one an earlier
+        // capture left out. Same interleaving as the config's: capture, let the
+        // file become something else for exactly as long as the parse takes,
+        // restore it. What comes back has to describe the captured plan.
+        let root = scratch_root("capturedplan");
+        let plan = root.join("plan.md");
+        fs::write(&plan, "## One\n<!-- tactus: id=t1 depends= -->\n").expect("captured plan");
+        let options = opts_in(&root, plan.to_str().expect("utf-8 path"));
+        let captured = CapturedInputs::capture(&options);
+
+        fs::write(
+            &plan,
+            "## One\n<!-- tactus: id=t1 depends= -->\n\
+             ## Two\n<!-- tactus: id=t2 depends=t1 -->\n",
+        )
+        .expect("the transient plan");
+        let analysis = analyze_captured(&captured, &options).expect("the captured plan analyses");
+        assert_eq!(
+            analysis
+                .plan
+                .tasks
+                .iter()
+                .map(|t| t.id.as_str().to_owned())
+                .collect::<Vec<_>>(),
+            vec!["t1"],
+            "the transient plan was parsed in place of the captured one"
+        );
+
+        fs::write(&plan, "## One\n<!-- tactus: id=t1 depends= -->\n").expect("restored");
+        assert_eq!(
+            CapturedInputs::capture(&options),
+            captured,
+            "and the excursion leaves no trace for a confirmation to find"
+        );
+    }
+
+    #[test]
+    fn a_gate_derivation_input_is_part_of_the_captured_set() {
+        // `gates::derive` takes a directory, so these three are captured rather
+        // than consumed — which makes it worth proving they are genuinely
+        // inputs, and that a change to one of them is a change the capture sees.
+        let root = scratch_root("capturedgates");
+        let plan = root.join("plan.md");
+        fs::write(&plan, "## One\n<!-- tactus: id=t1 depends= -->\n").expect("plan");
+        let options = opts_in(&root, plan.to_str().expect("utf-8 path"));
+
+        let bare = CapturedInputs::capture(&options);
+        let analysis = analyze_captured(&bare, &options).expect("analysis");
+        assert!(
+            analysis.gates.is_empty(),
+            "a repo of no recognised shape derives no gates: {:?}",
+            analysis.gates
+        );
+
+        fs::write(root.join("Cargo.toml"), "[package]\nname = \"x\"\n").expect("a rust repo now");
+        let shaped = CapturedInputs::capture(&options);
+        assert_ne!(shaped, bare, "the capture must see the worktree change");
+        let analysis = analyze_captured(&shaped, &options).expect("analysis");
+        assert_eq!(
+            analysis
+                .gates
+                .iter()
+                .map(|g| g.name.clone())
+                .collect::<Vec<_>>(),
+            vec!["check".to_owned(), "test".to_owned()],
+            "and the change is one the derivation acts on"
+        );
     }
 
     #[test]

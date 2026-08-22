@@ -1,6 +1,28 @@
 //! Workspace (DESIGN.md §6): the engine owns git. Agents edit files; only the
 //! engine stages, commits, branches, and rolls back (invariant 1). Every git
 //! operation is a subprocess of the system `git` binary — no library binding.
+//!
+//! # LEGACY-EFFECT
+//!
+//! `decisions.effect_site_inventory.mechanism` puts this module in the **frozen
+//! legacy section** of `effects/allowlist.toml` by name: "legacy modules frozen
+//! at PR5 (… legacy branch/checkout/commit operations in src/workspace.rs …)
+//! each carrying a LEGACY-EFFECT justification". The justification is that
+//! sentence's own: these are the schema-1..3 engine's Git operations, they are
+//! reached only by legacy paths, and `invariants_preserved[1]` requires their
+//! behaviour to be untouched by this slice. The schema-4 primitives —
+//! execution root, detached worktrees with intents, exact snapshots, engine
+//! refs, and the Git-object creation contexts — live behind typed funnels in
+//! [`crate::workspace_manager`] instead, and nothing here calls them.
+//!
+//! The section "may only shrink after PR5 (the test compares against the frozen
+//! list)", so this attribute is a ceiling rather than a licence.
+
+#![allow(
+    clippy::disallowed_methods,
+    clippy::disallowed_types,
+    clippy::disallowed_macros
+)]
 
 use std::ffi::OsString;
 use std::fs::{self, OpenOptions};

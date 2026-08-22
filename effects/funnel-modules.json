@@ -1,0 +1,24 @@
+{
+  "disagreements": [
+    {
+      "funnel_module": "src/rundir.rs",
+      "group": "Answer",
+      "inventory_module": "src/interaction.rs",
+      "site": "Answer.StageWrite"
+    },
+    {
+      "funnel_module": "src/rundir.rs",
+      "group": "Answer",
+      "inventory_module": "src/interaction.rs",
+      "site": "Answer.PublishRename"
+    },
+    {
+      "funnel_module": "src/rundir.rs",
+      "group": "Answer",
+      "inventory_module": "src/interaction.rs",
+      "site": "Answer.Ingest"
+    }
+  ],
+  "note": "PR5-CONF-018. effect_sites.json's `module` column is EffectSiteId::module(), which is PR3's frozen answer and the packet's -- mechanism (2) places the answer funnels in src/interaction.rs. PR5 lane B put those three funnel BODIES in src/rundir.rs and left interaction::{write_question, write_answer, read_answer} as delegations. Both files are allowlisted funnel modules and enforcement is unchanged either way, so Fable ruled this a preference and Sol a low defect; what is not a matter of taste is that a gate-attached artifact stated something untrue of this tree with nothing checked in saying otherwise. The generator is src/topology/effects.rs, frozen, so the column is corrected here rather than in place, and the funnel bodies are NOT moved.",
+  "sites_checked": 70
+}

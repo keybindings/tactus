@@ -22,12 +22,16 @@
 //! grant that no longer matches the command it is meant to authorize. The
 //! module comment used to argue that two copies of the quoting logic would be
 //! two chances to get it wrong. The right number was zero.
+// LEGACY-EFFECT: this module is in the **frozen legacy section** of
+// `effects/allowlist.toml`, which carries its justification and the condition
+// under which the section shrinks. `decisions.effect_site_inventory.mechanism` (2).
+#![allow(clippy::disallowed_methods)]
 
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::OnceLock;
 
 use crate::error::TactusError;
+use crate::runner::CommandSpec;
 use crate::util;
 
 /// A located agent binary and how to spawn it.
@@ -37,15 +41,60 @@ pub struct Invocation {
 }
 
 impl Invocation {
-    /// The command to run, with `args` handed to the standard library verbatim.
+    /// The command to run, as data: `args` are carried verbatim.
     ///
     /// Nothing is quoted, escaped, or wrapped here on purpose: `std` knows
     /// whether the resolved path is a batch shim and applies the right rules,
-    /// and every attempt to help it has been a way to get this wrong.
-    pub fn command(&self, args: &[String]) -> Command {
-        let mut cmd = Command::new(&self.path);
-        cmd.args(args);
-        cmd
+    /// and every attempt to help it has been a way to get this wrong. The
+    /// escaping still happens in exactly one place — the runner, when it turns
+    /// this spec into a `Command` — and this returns a
+    /// [`CommandSpec`] rather than a `Command` because DESIGN.md:117 says an
+    /// adapter "does not decide where the process runs".
+    ///
+    /// [`CommandSpec::program`] is a `String` (DESIGN.md:222), and a resolved
+    /// path that is not valid Unicode cannot become one **without becoming a
+    /// different path**. So this refuses rather than converting.
+    ///
+    /// The rejected alternative was `to_string_lossy`, and it is worth
+    /// recording why: `String::from_utf8_lossy` replaces each invalid byte
+    /// with `U+FFFD`, so a `claude` inside a `PATH` directory whose name
+    /// carries a non-UTF-8 byte — legal on Unix, where a path is bytes —
+    /// arrives at the runner as a path that names *nothing*, and the run dies
+    /// at `CreateProcess`/`execvp` with "failed to spawn", pointing at a path
+    /// the operator never wrote. Before this slice the `PathBuf` reached
+    /// `Command::new` unchanged and that installation ran.
+    ///
+    /// Neither behaviour is "legacy engine behavior unchanged"
+    /// (`invariants_preserved[1]`), because the frozen `CommandSpec.program:
+    /// String` cannot carry the input at all; the choice is between two ways
+    /// of failing. This one fails **at the boundary that cannot represent the
+    /// value**, names the path and says why, and cannot be mistaken for a
+    /// missing installation. Widening `CommandSpec.program` to an `OsString`
+    /// is the repair that would restore the old behaviour, and it is a change
+    /// to DESIGN.md:222 rather than to this function.
+    ///
+    /// # Errors
+    ///
+    /// [`TactusError::Refused`] when the resolved path is not valid Unicode.
+    pub fn spec(&self, args: &[String]) -> Result<CommandSpec, TactusError> {
+        let Some(program) = self.path.to_str() else {
+            return Err(TactusError::Refused {
+                message: format!(
+                    "the agent binary resolved to `{}`, a path that is not valid Unicode. \
+                     A CommandSpec carries its program as a String (DESIGN.md:222), and \
+                     converting this path would spawn a different one, so it is refused here \
+                     rather than at the spawn. Install the CLI under a Unicode path, or remove \
+                     that PATH entry",
+                    self.path.to_string_lossy()
+                ),
+            });
+        };
+        Ok(CommandSpec {
+            program: program.to_owned(),
+            args: args.to_vec(),
+            env: Vec::new(),
+            stdin: Vec::new(),
+        })
     }
 
     pub fn display(&self) -> String {
@@ -134,6 +183,32 @@ pub fn extract_version(stdout: &str) -> String {
         .unwrap_or_else(|| first_line.to_owned())
 }
 
+/// Test-only constructors.
+///
+/// Below every production item on purpose: `effects::production_region` cuts a
+/// file at its **first** `#[cfg(test)]`, so a test-only item placed among the
+/// production ones takes the rest of the file out of the wrapper-classification
+/// domain — silently, and `mechanism` (3)'s "every pubfn … is classified" would
+/// then be true of a domain nobody drew. That is `PR5D-VISIBILITY-CHECK-
+/// DUPLICATED`'s shape one level out, and it was measured here: five of this
+/// module's functions left the census the moment a `#[cfg(test)] fn` was added
+/// above them.
+#[cfg(test)]
+impl Invocation {
+    /// An invocation naming `path`, for tests that need one without asking
+    /// this machine what it has installed.
+    ///
+    /// Production's only constructors are [`locate`] and [`locate_with`], which
+    /// resolve against `PATH` and memoise into a process-wide `OnceLock` that
+    /// every sibling test in the binary then reads. A test that needs to drive
+    /// a *pre-flight sequence* — the six strict-config parser probes, say —
+    /// must not go through them. That is the hazard `4631a3f` repaired once
+    /// already.
+    pub(crate) fn at(path: impl Into<PathBuf>) -> Self {
+        Self { path: path.into() }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -148,6 +223,8 @@ mod tests {
 
     #[test]
     fn arguments_reach_the_command_untouched() {
+        use crate::runner::host::build_command;
+
         // The property the deleted quoting code kept breaking. These are the
         // exact shapes Copilot's permission surface produces: a gate command
         // with spaces and parentheses, a cmd metacharacter, a percent sign, an
@@ -164,11 +241,23 @@ mod tests {
         .map(str::to_owned)
         .to_vec();
 
-        let cmd = invocation(r"C:\Users\John Smith\npm\copilot.cmd").command(&args);
+        let spec = invocation(r"C:\Users\John Smith\npm\copilot.cmd")
+            .spec(&args)
+            .expect("a Unicode path");
+        assert_eq!(
+            spec.program, r"C:\Users\John Smith\npm\copilot.cmd",
+            "the shim is the program; nothing wraps it in a shell"
+        );
+        assert_eq!(spec.args, args, "every argument survives verbatim");
+
+        // And the same through the runner's own translation, which is what
+        // actually spawns: the spec surviving intact would be worth nothing if
+        // the step that turns it into a `Command` re-quoted it. The `cmd.exe`
+        // raw-tail rule applies to `cmd`, and this program is not it.
+        let cmd = build_command(&spec);
         assert_eq!(
             cmd.get_program(),
-            OsStr::new(r"C:\Users\John Smith\npm\copilot.cmd"),
-            "the shim is the program; nothing wraps it in a shell"
+            OsStr::new(r"C:\Users\John Smith\npm\copilot.cmd")
         );
         let seen: Vec<&OsStr> = cmd.get_args().collect();
         let expected: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
@@ -237,14 +326,99 @@ mod tests {
         // about plumbing rather than about batch re-parsing.
         std::fs::write(&shim, "@echo off\r\necho GOT:%~1\r\n").expect("write shim");
 
-        let out = invocation(&shim.to_string_lossy())
-            .command(&["hello world".to_owned()])
-            .output()
-            .expect("the shim spawns");
+        let out = crate::runner::host::build_command(
+            &invocation(&shim.to_string_lossy())
+                .spec(&["hello world".to_owned()])
+                .expect("a Unicode path"),
+        )
+        .output()
+        .expect("the shim spawns");
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(
             stdout.contains("GOT:hello world"),
             "the shim ran and saw its argument: {stdout:?}"
+        );
+    }
+
+    /// A resolved path that a `String` cannot carry is refused by name, not
+    /// converted into a path that names nothing.
+    ///
+    /// Both platforms have such a path and neither can be spelled in source as
+    /// a `&str`: on Unix a path is bytes, so `0xff` is legal and not UTF-8; on
+    /// Windows it is UTF-16, so an unpaired surrogate is legal and not UTF-8.
+    /// Every other fixture in this module is valid Unicode, which is why the
+    /// lossy conversion this replaced survived the suite while changing what a
+    /// supported installation did.
+    #[test]
+    fn a_program_path_a_string_cannot_carry_is_refused_by_name() {
+        #[cfg(unix)]
+        let (path, rendered) = {
+            use std::os::unix::ffi::OsStringExt;
+            let mut bytes = b"/opt/tactus-".to_vec();
+            bytes.push(0xff);
+            bytes.extend_from_slice(b"/claude");
+            (
+                PathBuf::from(std::ffi::OsString::from_vec(bytes)),
+                "/opt/tactus-\u{fffd}/claude",
+            )
+        };
+        #[cfg(windows)]
+        let (path, rendered) = {
+            use std::os::windows::ffi::OsStringExt;
+            let mut units: Vec<u16> = r"C:\tactus-".encode_utf16().collect();
+            units.push(0xd800);
+            units.extend(r"\claude.cmd".encode_utf16());
+            (
+                PathBuf::from(std::ffi::OsString::from_wide(&units)),
+                "C:\\tactus-\u{fffd}\\claude.cmd",
+            )
+        };
+
+        assert!(
+            path.to_str().is_none(),
+            "the fixture path is valid Unicode, so it witnesses nothing"
+        );
+        let unusable = Invocation { path };
+        let error = unusable
+            .spec(&["--version".to_owned()])
+            .expect_err("a path a String cannot carry must be refused");
+        let message = error.to_string();
+        // The operator has to be able to find the entry. `display()` stays
+        // lossy on purpose — it is a diagnostic, not a program.
+        assert!(message.contains(rendered), "{message}");
+        assert!(message.contains("not valid Unicode"), "{message}");
+        assert_eq!(unusable.display(), rendered);
+
+        // And the ordinary case is unaffected: same call, a Unicode path.
+        let fine = invocation("/usr/local/bin/claude")
+            .spec(&["--version".to_owned()])
+            .expect("a Unicode path is carried unchanged");
+        assert_eq!(fine.program, "/usr/local/bin/claude");
+        assert_eq!(fine.args, vec!["--version".to_owned()]);
+
+        // A path that legitimately *contains* `U+FFFD` is carried as itself.
+        //
+        // `U+FFFD` is an ordinary character in a filename. It is only special
+        // as `to_string_lossy`'s substitution marker, so every conversion that
+        // treats it as one — `to_string_lossy()` followed by a `replace`, the
+        // shape `PR4-SEAMS-004` names — silently renames a directory that
+        // really is called that, and spawns something else or nothing.
+        //
+        // Neither fixture above can see it: the refusal fixture's path is not
+        // valid Unicode at all, and the ordinary fixture's path carries no
+        // marker. This is the one input on which "refuse" and "substitute"
+        // still disagree after the refusal is in place.
+        let literal = "/opt/tactus-\u{fffd}/claude";
+        assert!(
+            literal.contains(char::REPLACEMENT_CHARACTER),
+            "the fixture lost its marker, so it witnesses nothing"
+        );
+        let carried = invocation(literal)
+            .spec(&["--version".to_owned()])
+            .expect("U+FFFD is a legal character in a path, not a conversion failure");
+        assert_eq!(
+            carried.program, literal,
+            "a path containing U+FFFD was rewritten rather than carried"
         );
     }
 

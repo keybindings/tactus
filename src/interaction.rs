@@ -12,6 +12,10 @@
 //! is raised. That file — not the terminal output — is the contract a
 //! notifier, a dashboard, or a future UI reads: the engine stays headless and
 //! panes are thin clients over its record.
+// Allowlist placement: the **funnel section** of `effects/allowlist.toml`, which
+// carries this module's review clause -- effects only inside site-taking APIs,
+// no writable handle returned. `decisions.effect_site_inventory.mechanism` (2).
+#![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
 
 use std::fmt;
 use std::io::{IsTerminal, Write};
@@ -94,12 +98,16 @@ pub fn new_question_id() -> QuestionId {
 }
 
 /// §15: `questions/<question-id>.json`, the payload notifiers and UIs read.
+///
+/// Through `RunDir.WriteQuestionPayload`. Behaviour-neutral: the same bytes at
+/// the same path, now named by the site the frozen inventory gives them.
 pub fn write_question(dir: &Path, record: &QuestionRecord) -> Result<(), TactusError> {
-    let path = dir.join(format!(
-        "{}.json",
-        util::filename_component(record.question.id.as_str())
-    ));
-    util::write_json(&path, record)
+    crate::rundir::write_question_payload(
+        dir,
+        &util::filename_component(record.question.id.as_str()),
+        record,
+        &mut crate::rundir::NoHooks,
+    )
 }
 
 /// Where `tactus answer` leaves an answer for a running or future engine.
@@ -124,28 +132,30 @@ pub fn answer_path(dir: &Path, id: &QuestionId) -> PathBuf {
 /// one therefore means something outside tactus wrote here, and silently
 /// ignoring what might be an operator's answer is worse than stopping to say
 /// so.
+/// Through `Answer.StageWrite` then `Answer.PublishRename` — the two sites the
+/// frozen inventory gives the answer command. Same two steps, same bytes.
 pub fn write_answer(dir: &Path, id: &QuestionId, answer: &Answer) -> Result<(), TactusError> {
     let component = util::filename_component(id.as_str());
-    let staged = dir.join(format!("{component}.json.partial"));
-    util::write_json(&staged, answer)?;
-    let path = answer_path(dir, id);
-    std::fs::rename(&staged, &path).map_err(|source| TactusError::Io {
-        path: path.clone(),
-        source,
-    })
+    let hooks = &mut crate::rundir::NoHooks;
+    crate::rundir::stage_answer(dir, &component, answer, hooks)?;
+    crate::rundir::publish_answer(dir, &component, hooks)
 }
 
 /// Read an answer if one has been left. `None` simply means not yet.
+///
+/// `Answer.Ingest` — a read-only observation, which is why it performs no
+/// effect and is still a site: the inventory names it and a site nothing calls
+/// cannot be shown to execute.
 pub fn read_answer(dir: &Path, id: &QuestionId) -> Result<Option<Answer>, TactusError> {
+    let component = util::filename_component(id.as_str());
     let path = answer_path(dir, id);
-    match std::fs::read_to_string(&path) {
-        Ok(text) => serde_json::from_str(&text)
+    match crate::rundir::ingest_answer(dir, &component, &mut crate::rundir::NoHooks)? {
+        Some(text) => serde_json::from_str(&text)
             .map(Some)
             .map_err(|e| TactusError::Parse {
                 message: format!("{}: {e}", path.display()),
             }),
-        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(source) => Err(TactusError::Io { path, source }),
+        None => Ok(None),
     }
 }
 

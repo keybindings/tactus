@@ -1,0 +1,173 @@
+{
+  "note": "decisions.effect_site_inventory.outputs: the residue-class evidence record, DECLARATIONS half. Per element: constructed, classified, recovered -- proven by workspace_manager::tests. Per site: the frozen sampling N. The observed-class histogram is machine-varying and cannot be pinned in a file compared byte-for-byte, so it is emitted to effects/residue-histogram.json on every run by sampled_git_child_kills_every_residue_classified_and_recovered, which reads it back and checks it accounts for every sample (PR5-CONF-004).",
+  "sites": [
+    {
+      "classes": [
+        {
+          "class": "object_internal",
+          "classified_as": "internal",
+          "label": "recovery_proven"
+        }
+      ],
+      "elements": [
+        "registered_unpopulated_worktree"
+      ],
+      "group": "Worktree",
+      "module": "src/workspace_manager.rs",
+      "row": "r9",
+      "sampling_n": 8,
+      "site": "Worktree.Add"
+    },
+    {
+      "classes": [
+        {
+          "class": "object_internal",
+          "classified_as": "internal",
+          "label": "recovery_proven"
+        }
+      ],
+      "elements": [
+        "registered_unpopulated_worktree"
+      ],
+      "group": "Worktree",
+      "module": "src/workspace_manager.rs",
+      "row": "r10",
+      "sampling_n": 8,
+      "site": "Worktree.AddStaging"
+    },
+    {
+      "classes": [
+        {
+          "class": "object_internal",
+          "classified_as": "internal",
+          "label": "recovery_proven"
+        }
+      ],
+      "elements": [
+        "registered_unpopulated_worktree"
+      ],
+      "group": "Snapshot",
+      "module": "src/workspace_manager.rs",
+      "row": "r24",
+      "sampling_n": 8,
+      "site": "Snapshot.Add"
+    },
+    {
+      "classes": [
+        {
+          "class": "object_internal",
+          "classified_as": "internal",
+          "label": "recovery_proven"
+        }
+      ],
+      "elements": [
+        "unreferenced_object",
+        "temporary_object_file",
+        "index_lock"
+      ],
+      "group": "Object",
+      "module": "src/workspace_manager.rs",
+      "row": "r9",
+      "sampling_n": 8,
+      "site": "Object.CandidateStage"
+    },
+    {
+      "classes": [
+        {
+          "class": "object_internal",
+          "classified_as": "internal",
+          "label": "recovery_proven"
+        }
+      ],
+      "elements": [
+        "unreferenced_object",
+        "temporary_object_file",
+        "index_lock"
+      ],
+      "group": "Object",
+      "module": "src/workspace_manager.rs",
+      "row": "r9",
+      "sampling_n": 8,
+      "site": "Object.CandidateWriteTree"
+    },
+    {
+      "classes": [
+        {
+          "class": "object_internal",
+          "classified_as": "internal",
+          "label": "recovery_proven"
+        }
+      ],
+      "elements": [
+        "unreferenced_object",
+        "temporary_object_file"
+      ],
+      "group": "Object",
+      "module": "src/workspace_manager.rs",
+      "row": "r27",
+      "sampling_n": 8,
+      "site": "Object.SnapshotCommitTree"
+    },
+    {
+      "classes": [
+        {
+          "class": "object_internal",
+          "classified_as": "internal",
+          "label": "recovery_proven"
+        }
+      ],
+      "elements": [
+        "unreferenced_object",
+        "temporary_object_file"
+      ],
+      "group": "Object",
+      "module": "src/workspace_manager.rs",
+      "row": "r27",
+      "sampling_n": 8,
+      "site": "Object.CandidateCommitTree"
+    },
+    {
+      "classes": [
+        {
+          "class": "object_internal",
+          "classified_as": "internal",
+          "label": "recovery_proven"
+        }
+      ],
+      "elements": [
+        "unreferenced_object",
+        "temporary_object_file",
+        "index_lock",
+        "cherry_pick_head",
+        "merge_head",
+        "merge_msg",
+        "sequencer_state"
+      ],
+      "group": "Object",
+      "module": "src/workspace_manager.rs",
+      "row": "r10",
+      "sampling_n": 8,
+      "site": "Object.ProposalCherryPick"
+    },
+    {
+      "classes": [
+        {
+          "class": "object_internal",
+          "classified_as": "internal",
+          "label": "recovery_proven"
+        }
+      ],
+      "elements": [
+        "unreferenced_object",
+        "temporary_object_file",
+        "index_lock",
+        "cherry_pick_head"
+      ],
+      "group": "Object",
+      "module": "src/workspace_manager.rs",
+      "row": "r9",
+      "sampling_n": 8,
+      "site": "Object.RepairMaterialize"
+    }
+  ]
+}

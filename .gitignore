@@ -6,3 +6,9 @@ plan.normalized.json
 # ignored -- only the per-machine layer and the backups /doctor writes.
 .claude/settings.local.json
 .claude/settings.local.json.doctor-backup
+
+# The observed-class histogram half of the residue-class evidence record: a
+# property of the machine that ran the kill sampling, emitted on every test run
+# (`PR5-CONF-004`). The declarations half, `effects/residue-classes.json`, IS
+# checked in and IS compared byte-for-byte.
+/effects/residue-histogram.json

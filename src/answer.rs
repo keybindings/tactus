@@ -9,6 +9,10 @@
 //!
 //! That indirection is what makes §12's promise ("a run survives its
 //! notifier") true of answers as well as delivery.
+// LEGACY-EFFECT: this module is in the **frozen legacy section** of
+// `effects/allowlist.toml`, which carries its justification and the condition
+// under which the section shrinks. `decisions.effect_site_inventory.mechanism` (2).
+#![allow(clippy::disallowed_methods)]
 
 use std::path::Path;
 
@@ -154,8 +158,22 @@ mod tests {
     }
 
     fn seed(repo: &Path, run: &str, id: &str) {
-        let questions = rundir::public_dir(repo, run).join("questions");
+        let public = rundir::public_dir(repo, run);
+        let questions = public.join("questions");
         std::fs::create_dir_all(&questions).expect("questions dir");
+        // A run only exists once its log records a committed `run_started`:
+        // `find_question` scans committed directories, so a fixture that wrote
+        // only a question would be answering a question in a husk. Written by
+        // hand rather than serialized, so the fixture pins the wire rather than
+        // agreeing with whatever the writer happens to produce.
+        std::fs::write(
+            public.join("events.jsonl"),
+            format!(
+                "{{\"ts\":\"2026-08-20T00:00:00Z\",\"event\":\"run_started\",\
+                 \"data\":{{\"schema\":3,\"run_id\":\"{run}\"}}}}\n"
+            ),
+        )
+        .expect("committed first line");
         let record = QuestionRecord::open(Question {
             id: QuestionId::from(id),
             kind: QuestionKind::Unblock,

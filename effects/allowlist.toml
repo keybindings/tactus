@@ -1,0 +1,464 @@
+# Where an allow of a governed lint may live.
+#
+# `decisions.effect_site_inventory.mechanism` (2): "an allow-placement scan (a
+# unit test over src/**/*.rs, Cargo.toml [lints], and crate-level attributes in
+# lib.rs/main.rs) permits allow/expect of disallowed_methods, disallowed_types,
+# disallowed_macros, clippy::style, clippy::all, or warnings only as
+# module-level attributes in files listed in effects/allowlist.toml, which has
+# two sections: funnel modules … and legacy modules frozen at PR5 … each
+# carrying a LEGACY-EFFECT justification; the legacy section may only shrink
+# after PR5 (the test compares against the frozen list) and never contains a
+# topology module (src/topology/**, src/runner/**, src/workspace_manager.rs,
+# src/engine/topology.rs)".
+#
+# The scan is `effects::tests::every_allow_of_a_governed_lint_is_module_level_
+# and_in_the_allowlist`. It reads this file, so an entry deleted here fails the
+# build of the file that relied on it.
+#
+# `allows` is the exact lint set the file's attribute names, asserted equal, not
+# merely contained: an attribute that allows a lint this file does not record is
+# an unreviewed widening, and a file that starts violating a fourth lint fails
+# clippy until both are updated together. It is the union over platforms — a
+# `#[cfg(windows)]` body's lint cannot be measured from a Unix host — which is
+# why `allow` is used rather than `expect`; `expect` would make the union fail
+# on whichever platform did not need all of it.
+#
+# `scanned_beyond_the_packet`: the mechanism sentence says `src/**/*.rs`. The
+# scan also covers `examples/**/*.rs`, because `cargo clippy --all-targets`
+# compiles examples and `examples/probe.rs` reaches an effect. Scanning wider
+# than the sentence can only find more, never less.
+
+# ---------------------------------------------------------------------------
+# Funnel modules
+#
+# "each reviewed to perform effects only inside site-taking APIs and never to
+# return writable handles."
+#
+# The review is over each module's PRODUCTION surface. That is the packet's own
+# reading, not a relaxation invented here: the sentence lists
+# `src/topology/effects.rs`, whose production surface performs no effect at all,
+# beside `src/rundir.rs`, whose test region plants husks with raw `fs` calls.
+# ---------------------------------------------------------------------------
+
+[[funnel]]
+path = "src/workspace_manager.rs"
+allows = ["clippy::disallowed_methods", "clippy::disallowed_types", "clippy::disallowed_macros"]
+packet = "effect_site_inventory.mechanism (2): named first in the funnel-module list"
+review = """
+Every effect is issued inside a `funnel` call taking an `EffectSiteId` by value \
+(Worktree/Snapshot/Ref/Object groups, `FunnelGroup::module()`), and no public \
+function returns a `File`, an `OpenOptions` or a `Command`."""
+
+[[funnel]]
+path = "src/topology/effects.rs"
+allows = []
+packet = "effect_site_inventory.mechanism (2): named in the funnel-module list"
+review = """
+The site enums, their const accessors and `effect_sites()`. Performs no effect \
+at all, in production or in tests, so it carries no attribute — listed because \
+the packet lists it, and because a future effect here would have to be reviewed \
+into `allows` rather than appearing silently."""
+
+[[funnel]]
+path = "src/runner/host.rs"
+allows = ["clippy::disallowed_methods", "clippy::disallowed_types", "clippy::disallowed_macros"]
+packet = "effect_site_inventory.mechanism (2): src/runner/{host,container,invocation}.rs"
+review = """
+The Process funnel: `FunnelGroup::Process.module()` is this file. Process start \
+is `HostRunner::run`, which threads `SpawnHooks` and consults every containment \
+sub-effect point; the primitives it calls live in `src/agent/proc.rs`, which is \
+frozen in the legacy section beneath it."""
+
+[[funnel]]
+path = "src/runner/container.rs"
+allows = []
+absent = true
+packet = "effect_site_inventory.mechanism (2): src/runner/{host,container,invocation}.rs; `FunnelGroup::Container.module()`"
+review = """
+NOT IN THE TREE. `ContainerSite`'s eight sites map to this module and no file \
+implements them; PR5's `non_goals[0]` is production topology callers and the \
+container runner is PR6's. Recorded as absent rather than dropped, because a \
+funnel module the inventory names and the allowlist omits is exactly the \
+omission `effect_sites.json` exists to make visible."""
+
+[[funnel]]
+path = "src/runner/invocation.rs"
+allows = []
+packet = "effect_site_inventory.mechanism (2): src/runner/{host,container,invocation}.rs"
+review = """
+Invocation identity and policy shaping. Reaches no denied primitive today; \
+listed because the packet lists it."""
+
+[[funnel]]
+path = "src/rundir.rs"
+allows = ["clippy::disallowed_methods", "clippy::disallowed_types", "clippy::disallowed_macros"]
+packet = "effect_site_inventory.mechanism (2): the lock and run-directory funnels in src/rundir.rs"
+review = """
+Every run-directory, answer and lock effect is issued inside a `funnel` call \
+naming one `EffectSiteId` (RunDir, Answer, Lock groups). The private-half \
+deletion funnel takes a `PrivateHalfProof` by value and no other constructor \
+exists. No public function returns a writable handle; `WorktreeLock`/`RunLock` \
+own their descriptors and release them on drop."""
+
+[[funnel]]
+path = "src/interaction.rs"
+allows = ["clippy::disallowed_methods", "clippy::disallowed_macros"]
+packet = "effect_site_inventory.mechanism (2): the answer funnels in src/interaction.rs"
+review = """
+The packet places the answer funnels here; PR5 lane B moved the funnel BODIES to \
+`src/rundir.rs` (Answer.StageWrite / PublishRename / Ingest) and left \
+`write_question`/`write_answer`/`read_answer` as delegations. Both files are \
+listed and the delegations are classified as wrappers in `effects/wrappers.toml`, \
+so the disagreement is recorded rather than resolved by silence. The remaining \
+effects here are the notifier's stderr and the test region's scratch \
+directories."""
+
+[[funnel]]
+path = "src/util.rs"
+allows = ["clippy::disallowed_methods"]
+packet = "effect_site_inventory.mechanism (2): the write primitives in src/util.rs"
+review = """
+`write_text`/`write_json` are the crate's shared write primitives. They take no \
+site, so `mechanism` (3) classifies them as effectful WRAPPERS rather than as \
+funnels — `util::write_json` is that sentence's own example — and both are on \
+the disallowed list. `ReportSite::Write`'s `module()` names this file and no \
+function here takes that site; see `effects/wrappers.toml` and the site \
+inventory."""
+
+[[funnel]]
+path = "src/events/log.rs"
+allows = ["clippy::disallowed_methods", "clippy::disallowed_types"]
+packet = "effect_site_inventory.mechanism (2): the Event funnel src/events/log.rs"
+review = """
+Every write, flush, sync and truncation is inside `EventLog`, whose two entry \
+points take an `EventSite` by value. `mechanism` (3): "EventLog::open and \
+EventLog::append are classified as the Event funnel (site-taking) rather than as \
+wrappers, and the raw writer they wrap is reachable only inside \
+src/events/log.rs" — the `File` field is private and \
+`every_declared_build_refusal_fails_for_the_reason_it_declares` compiles the \
+fixture that proves it."""
+
+[[funnel]]
+path = "src/events/log/tests.rs"
+allows = ["clippy::disallowed_methods", "clippy::disallowed_types"]
+packet = "effect_site_inventory.mechanism (2), by attachment: the `#[cfg(test)] mod tests;` of src/events/log.rs"
+review = """
+The Event funnel's own test module, declared by `src/events/log.rs`. It plants \
+torn tails and unsynced prefixes with raw `fs` calls, which is what a funnel's \
+test region is for; the module's production surface is the funnel's and is \
+reviewed there. Attached to the funnel section rather than frozen into the \
+legacy section, because a PR5 file is not legacy and the legacy section may only \
+shrink."""
+
+[[funnel]]
+path = "src/effects/tests.rs"
+allows = ["clippy::disallowed_methods", "clippy::disallowed_types", "clippy::disallowed_macros"]
+packet = "effect_site_inventory.outputs, by attachment: the `#[cfg(test)] mod tests;` of src/effects.rs"
+review = """
+This layer's own test module. It compiles the build-refusal fixtures as \
+subprocesses, writes the generated artifacts, and walks the tree; the module's \
+production surface is `src/effects.rs`'s and performs no effect at all."""
+
+[[funnel]]
+path = "src/effects.rs"
+allows = []
+packet = "effect_site_inventory.outputs: clippy.toml; effects/allowlist.toml; the wrapper classification; the residue-class evidence record"
+review = """
+This enforcement layer itself, and it carries NO attribute — which is a stronger \
+claim than any other entry in this section makes. Its whole surface is paths, \
+parsers and classification over `&str`; it reaches no denied primitive, and the \
+one `std::process::Command` its text contains is inside `DENIAL_FIXTURES`, a \
+string constant that `src/effects/tests.rs` compiles in order to prove it is \
+refused. Listed because a future effect here must be reviewed into `allows` \
+rather than appearing silently, and because the layer that governs the allowlist \
+being absent from it would be the one omission nobody would think to look for."""
+
+# ---------------------------------------------------------------------------
+# Legacy modules, FROZEN AT PR5
+#
+# "legacy modules frozen at PR5 (schema-1..3 engine paths in
+# src/engine/{coordinator,resume,attempt,preflight}.rs, legacy branch/checkout/
+# commit operations in src/workspace.rs, src/gates.rs, src/review.rs, src/agent
+# supervision until PR4 lands the process funnel, src/capacity.rs, notifier and
+# export modules, and any other module the PR5 review enumerates) each carrying
+# a LEGACY-EFFECT justification".
+#
+# This list may only SHRINK. `effects::tests::the_legacy_section_is_frozen_and_
+# may_only_shrink` compares it against `FROZEN_LEGACY_ALLOWLIST` in
+# `src/effects.rs` and fails on any entry that is not in the frozen list. It
+# contains no topology module and
+# `the_legacy_section_never_contains_a_topology_module` fails if one appears.
+# Both tests are also driven with synthetic input that DOES grow and DOES name a
+# topology module, so the refusals are executed rather than assumed.
+# ---------------------------------------------------------------------------
+
+[[legacy]]
+path = "src/engine/coordinator.rs"
+allows = ["clippy::disallowed_methods"]
+packet = "effect_site_inventory.mechanism (2): schema-1..3 engine paths in src/engine/{coordinator,resume,attempt,preflight}.rs"
+legacy_effect = """
+LEGACY-EFFECT: the schema-1..3 coordinator's own run-directory teardown \
+(`fs::remove_dir_all` of a public and a private half on a failed start). \
+`invariants_preserved[1]` requires the legacy engine's behaviour untouched by \
+this slice, so the calls are frozen rather than moved."""
+shrinks_when = "PR7-PR11 route the legacy coordinator's teardown through the RunDir husk funnels, which need the ownership proof this slice adds."
+
+[[legacy]]
+path = "src/engine/resume.rs"
+allows = ["clippy::disallowed_methods"]
+packet = "effect_site_inventory.mechanism (2): schema-1..3 engine paths"
+legacy_effect = """
+LEGACY-EFFECT: reaches `interaction::write_question`, an effectful wrapper, when \
+the legacy resume path asks a question. Frozen with the rest of the legacy \
+engine."""
+shrinks_when = "the schema-4 coordinator asks questions through RunDir.WriteQuestionPayload directly, at which point this call site goes."
+
+[[legacy]]
+path = "src/engine/attempt.rs"
+allows = ["clippy::disallowed_methods"]
+packet = "effect_site_inventory.mechanism (2): schema-1..3 engine paths"
+legacy_effect = """
+LEGACY-EFFECT: writes agent transcripts through `util::write_text`, an effectful \
+wrapper. `RunDir` has no transcript site in the frozen inventory, so there is no \
+funnel to move it to inside this slice."""
+shrinks_when = "the inventory gains a transcript site, or transcripts move under RunDir.WriteReport's row."
+
+[[legacy]]
+path = "src/engine/preflight.rs"
+allows = []
+packet = "effect_site_inventory.mechanism (2): schema-1..3 engine paths"
+legacy_effect = """
+LEGACY-EFFECT: named by the packet in the frozen legacy list. Reaches no denied \
+primitive today, so it carries no attribute; listed so that a legacy effect \
+added here is reviewed into `allows` rather than appearing silently."""
+shrinks_when = "immediately — it can be dropped from this list at any time without weakening anything."
+
+[[legacy]]
+path = "src/workspace.rs"
+allows = ["clippy::disallowed_methods", "clippy::disallowed_types", "clippy::disallowed_macros"]
+packet = "effect_site_inventory.mechanism (2): legacy branch/checkout/commit operations in src/workspace.rs"
+legacy_effect = """
+LEGACY-EFFECT: the schema-1..3 engine's Git operations — branch, checkout, \
+stage, commit, rollback — each a `std::process::Command` on the system git, plus \
+the working-tree writes around them. `invariants_preserved[1]` requires this \
+module's behaviour untouched; the schema-4 equivalents live behind funnels in \
+`crate::workspace_manager` and nothing here calls them."""
+shrinks_when = "the schema-4 engine replaces the legacy paths that call this module (PR7-PR11); the module goes with them."
+
+[[legacy]]
+path = "src/gates.rs"
+allows = ["clippy::disallowed_methods", "clippy::disallowed_types"]
+packet = "effect_site_inventory.mechanism (2): src/gates.rs"
+legacy_effect = """
+LEGACY-EFFECT: gate execution builds a `std::process::Command` for the gate \
+shell and writes gate logs with `fs::write`. PR4 routed the gate's *process* \
+through the Runner; the log write and the `command()` builder are still direct."""
+shrinks_when = "gate logs move under a RunDir site and `ShellGate::command` stops handing out a Command."
+
+[[legacy]]
+path = "src/review.rs"
+allows = ["clippy::disallowed_methods", "clippy::disallowed_macros"]
+packet = "effect_site_inventory.mechanism (2): src/review.rs"
+legacy_effect = """
+LEGACY-EFFECT: review transcript writes and the review scratch directories its \
+tests build. Frozen with the legacy engine that calls it."""
+shrinks_when = "review transcripts move under a RunDir site."
+
+[[legacy]]
+path = "src/agent/proc.rs"
+allows = ["clippy::disallowed_methods", "clippy::disallowed_types", "clippy::disallowed_macros"]
+packet = "effect_site_inventory.mechanism (2): src/agent supervision until PR4 lands the process funnel"
+legacy_effect = """
+LEGACY-EFFECT, and the clause that names it deserves reading precisely. PR4 DID \
+land the process funnel, and the funnel it landed is `src/runner/host.rs` — \
+which is what `FunnelGroup::Process.module()` says and what the packet's own \
+funnel list names. This file is the supervision PRIMITIVE layer beneath that \
+funnel: `fork`, `setpgid`, `exec`, the reaper, the Job Objects, `LockFileEx`. \
+Its public API takes `SpawnHooks`, not a `ProcessSite`, so it does not satisfy \
+the funnel section's "effects only inside site-taking APIs" and is frozen here \
+instead of promoted."""
+shrinks_when = "the supervision primitives take a ProcessSite by value, at which point this file joins the funnel section rather than leaving the allowlist."
+
+[[legacy]]
+path = "src/agent/claude.rs"
+allows = ["clippy::disallowed_methods", "clippy::disallowed_macros"]
+packet = "effect_site_inventory.mechanism (2): and any other module the PR5 review enumerates"
+legacy_effect = """
+LEGACY-EFFECT: the adapter writes a permission-settings file through \
+`util::write_json` before an attempt, and its live-probe test prints to stderr. \
+Enumerated rather than claimed as "src/agent supervision", which it is not."""
+shrinks_when = "the settings file moves under a RunDir site."
+
+[[legacy]]
+path = "src/agent/codex.rs"
+allows = ["clippy::disallowed_methods", "clippy::disallowed_macros"]
+packet = "effect_site_inventory.mechanism (2): and any other module the PR5 review enumerates"
+legacy_effect = """
+LEGACY-EFFECT: the adapter creates and removes its own scratch directory with \
+`fs::create_dir`/`fs::remove_dir`, and its live-probe test prints to stderr."""
+shrinks_when = "the adapter scratch directory moves under R18 or a RunDir site."
+
+[[legacy]]
+path = "src/agent/copilot.rs"
+allows = ["clippy::disallowed_methods", "clippy::disallowed_macros"]
+packet = "effect_site_inventory.mechanism (2): and any other module the PR5 review enumerates"
+legacy_effect = """
+LEGACY-EFFECT: the adapter writes its configuration through `util::write_json`, \
+and its live-probe test prints to stderr."""
+shrinks_when = "the configuration write moves under a RunDir site."
+
+[[legacy]]
+path = "src/capacity.rs"
+allows = []
+packet = "effect_site_inventory.mechanism (2): src/capacity.rs"
+legacy_effect = """
+LEGACY-EFFECT: named by the packet in the frozen legacy list. Reaches no denied \
+primitive today — PR4 moved its process starts behind the Runner — so it carries \
+no attribute; listed so a legacy effect added here is reviewed rather than \
+silent."""
+shrinks_when = "immediately — it can be dropped from this list at any time without weakening anything."
+
+[[legacy]]
+path = "src/export.rs"
+allows = ["clippy::disallowed_methods"]
+packet = "effect_site_inventory.mechanism (2): notifier and export modules"
+legacy_effect = """
+LEGACY-EFFECT: the CSV and JSONL writers emit through `io::Write::write_all` on \
+a caller-supplied sink, and the export tests build whole run directories with \
+raw `fs` calls. The sink is usually stdout rather than a file, but the denial \
+cannot tell a `File` from a `Vec<u8>` and the packet's answer to that is this \
+list."""
+shrinks_when = "export writes go to a sink type this crate owns, or the export tests build their fixtures through the RunDir funnels."
+
+[[legacy]]
+path = "src/main.rs"
+allows = ["clippy::disallowed_macros", "clippy::disallowed_methods", "clippy::disallowed_types"]
+packet = "effect_site_inventory.mechanism (2): and any other module the PR5 review enumerates; the scan's own domain names main.rs"
+legacy_effect = """
+LEGACY-EFFECT: the CLI surface writes the process's own stdout and stderr. That \
+is an external effect with no resource row, no site and no funnel, and \
+`production_effect` is "none in behavior", so it is frozen and listed rather \
+than moved. This is a CRATE-LEVEL attribute — `main.rs` is a crate root — and \
+the mechanism sentence scans exactly that: "crate-level attributes in \
+lib.rs/main.rs". `src/lib.rs` is deliberately NOT in this file, so a crate-level \
+allow there fails the scan."""
+shrinks_when = "the CLI reports through a sink the engine owns rather than through the print macros."
+# `disallowed_types` is the union-over-platforms case this file's header
+# predicts: `src/main.rs:1085` is a `#[cfg(windows)]` test that builds a
+# `std::process::Command`, invisible to a Unix clippy run and caught by
+# `cargo clippy --target x86_64-pc-windows-msvc`.
+
+[[legacy]]
+path = "src/answer.rs"
+allows = ["clippy::disallowed_methods"]
+packet = "effect_site_inventory.mechanism (2): and any other module the PR5 review enumerates"
+legacy_effect = """
+LEGACY-EFFECT: the `answer` command creates the answers directory with \
+`fs::create_dir_all` before staging. `RunDir` has no create-answers-directory \
+site in the frozen inventory, so there is no funnel to move it to inside this \
+slice; the staging and publication either side of it already go through \
+Answer.StageWrite and Answer.PublishRename."""
+shrinks_when = "the inventory gains a site for the answers directory, or its creation folds into RunDir.CreatePublicDir."
+
+[[legacy]]
+path = "src/config.rs"
+allows = ["clippy::disallowed_methods"]
+packet = "effect_site_inventory.mechanism (2): and any other module the PR5 review enumerates"
+legacy_effect = """
+LEGACY-EFFECT: test region only — configuration loading is read-only, and the \
+fixtures that exercise it write scratch config files directly."""
+shrinks_when = "the config fixtures build their scratch trees through a funnel."
+
+[[legacy]]
+path = "src/connect.rs"
+allows = ["clippy::disallowed_methods", "clippy::disallowed_macros"]
+packet = "effect_site_inventory.mechanism (2): and any other module the PR5 review enumerates"
+legacy_effect = """
+LEGACY-EFFECT: `connect` writes the user's own `tactus.toml` region and creates \
+its parent directory, outside any run and outside every resource row — it is a \
+setup command, not an engine path."""
+shrinks_when = "never, on current reading: the file it writes belongs to the operator, not to a run."
+
+[[legacy]]
+path = "src/route.rs"
+allows = ["clippy::disallowed_methods"]
+packet = "effect_site_inventory.mechanism (2): and any other module the PR5 review enumerates"
+legacy_effect = "LEGACY-EFFECT: test region only — routing is pure; its fixtures write scratch pool files directly."
+shrinks_when = "the routing fixtures build their scratch trees through a funnel."
+
+[[legacy]]
+path = "src/status.rs"
+allows = ["clippy::disallowed_methods", "clippy::disallowed_types"]
+packet = "effect_site_inventory.mechanism (2): and any other module the PR5 review enumerates"
+legacy_effect = """
+LEGACY-EFFECT: `render` streams the settled view with `writeln!` on an \
+`io::Write` sink — the macro path `write_fmt`, which is why the denial names it \
+— and the husk-trichotomy tests build run directories with raw `fs` and a `git` \
+`Command`."""
+shrinks_when = "the status renderer returns a String rather than writing a sink, and its fixtures build run directories through the RunDir funnels."
+
+[[legacy]]
+path = "src/validate.rs"
+allows = ["clippy::disallowed_methods"]
+packet = "effect_site_inventory.mechanism (2): and any other module the PR5 review enumerates"
+legacy_effect = """
+LEGACY-EFFECT: `validate --write` writes the normalized plan back beside the \
+source with `fs::write`, outside any run directory, plus the fixtures that \
+exercise it."""
+shrinks_when = "the write-back moves under a site, which needs a resource row for a file that is not run-scoped."
+
+[[legacy]]
+path = "src/events/mod.rs"
+allows = ["clippy::disallowed_methods", "clippy::disallowed_types"]
+packet = "effect_site_inventory.mechanism (2): and any other module the PR5 review enumerates"
+legacy_effect = """
+LEGACY-EFFECT: the schema-1..3 event types and their tests. The Event funnel \
+itself is `src/events/log.rs` and is in the funnel section; what is left here is \
+the type layer plus a test region that plants torn tails with `OpenOptions` and \
+`fs::write`."""
+shrinks_when = "the event-type tests plant their logs through the Event funnel's own kill and error-return points."
+
+[[legacy]]
+path = "src/events/log/premove.rs"
+allows = ["clippy::disallowed_methods", "clippy::disallowed_types"]
+packet = "effect_site_inventory.mechanism (2): and any other module the PR5 review enumerates"
+legacy_effect = """
+LEGACY-EFFECT, and this file is the most literally legacy thing in the tree: it \
+is `git show ff0490a:src/events.rs | sed -n '1478,1585p'`, the PRE-MOVE writer, \
+kept verbatim as the independent oracle for "byte-identical legacy behaviour". \
+Its whole value is that it is unchanged, so its `OpenOptions`, `set_len`, \
+`write_all`, `flush` and `sync_data` must stay exactly where they are."""
+shrinks_when = "the byte-identity obligation retires with the legacy engine; the file goes with it."
+
+[[legacy]]
+path = "src/engine/tests.rs"
+allows = ["clippy::disallowed_methods", "clippy::disallowed_types"]
+packet = "effect_site_inventory.mechanism (2): and any other module the PR5 review enumerates"
+legacy_effect = """
+LEGACY-EFFECT: the whole-file `#[cfg(test)] mod tests;` of the legacy engine. It \
+builds real repositories and run directories with `fs` and `git` `Command`s to \
+drive the schema-1..3 paths end to end. Attached to the legacy section because \
+the modules it tests are in it."""
+shrinks_when = "the legacy engine goes; these tests go with it."
+
+[[legacy]]
+path = "examples/probe.rs"
+allows = ["clippy::disallowed_macros"]
+packet = "effect_site_inventory.mechanism (2): and any other module the PR5 review enumerates"
+legacy_effect = """
+LEGACY-EFFECT: an example binary whose entire output is `println!`. Outside \
+`src/**`, which is why the scan's domain is widened to `examples/**`; \
+`cargo clippy --all-targets` compiles it and an ungoverned example is a hole in \
+the same wall."""
+shrinks_when = "never, on current reading: an example that printed nothing would demonstrate nothing."
+
+[[legacy]]
+path = "src/agent/bin.rs"
+allows = ["clippy::disallowed_methods"]
+packet = "effect_site_inventory.mechanism (2): and any other module the PR5 review enumerates"
+legacy_effect = """
+LEGACY-EFFECT: its test region calls `runner::host::build_command`, which is a \
+denied wrapper because it hands out a `std::process::Command`. Enumerated so \
+that the denial of `build_command` — which is the honest response to a funnel \
+module returning a writable handle — does not have to be weakened."""
+shrinks_when = "`build_command` stops returning a Command, which is PR5D-FUNNEL-RETURNS-A-COMMAND in reviews/FINDINGS.md."
