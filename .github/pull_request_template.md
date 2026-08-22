@@ -9,8 +9,9 @@
 ## Validation
 
 - [ ] `cargo fmt --check`
-- [ ] `cargo clippy --all-targets -- -D warnings`
-- [ ] `cargo test --all-targets`
+- [ ] `cargo clippy --all-targets --all-features -- -D warnings`
+- [ ] `cargo test --all-targets --all-features`
+- [ ] `cargo +1.85.0 check --locked --all-targets --all-features`
 
 Exact commands and results:
 
@@ -25,6 +26,11 @@ Frontier reviewer model and effort:
 Review transport and per-pass wall-clock limit:
 
 Passing review evidence URL:
+
+<!-- Two of the six rows below are attestation-specific -- the evidence comment
+     and the App-owned check -- and apply only to pull requests into `master`. A
+     slice pull request into an integration branch is reviewed but never
+     attested, so those two stay unchecked — decisions/2026-08-21-stacked-slice-prs.md. -->
 
 - [ ] `tactus-ci` and `tactus-pr-policy` passed before frontier review began
 - [ ] The independent frontier review used `max` effort on the exact current head

@@ -90,6 +90,7 @@ jobs:
       - run: bash .github/scripts/test-release-record.sh
       - run: bash .github/scripts/test-pr-policy.sh
       - run: bash .github/scripts/test-pr-ledger-evidence.sh
+      - run: bash .github/scripts/test-docs-consistency.sh
 
   # Branch protection requires this one deliberately stable context. Keeping
   # the external rule pointed at an aggregate means adding a platform or
