@@ -57,3 +57,7 @@ artifacts (§15); records promoted here are the durable subset.
   slice PRs into `codex/parallelism-design` get CI, policy, and a single-reviewer
   review of each head; attestation stays master-only and happens once on #18's
   merge candidate. Merge commits only — a rewrite orphans ledger rows.
+- [2026-08-22 — the strategy layer lives outside the public repository](2026-08-22-strategy-record-private.md):
+  competitive analysis, kill criteria, positioning and the commercial path are
+  maintained privately; `DESIGN.md` keeps stubs plus the engineering consequences;
+  promotion is demand-driven, by the pull request that first needs to cite a document.
